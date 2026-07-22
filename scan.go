@@ -1,15 +1,12 @@
 package main
 
 import (
-	"archive/zip"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
-
-var archiveExts = map[string]bool{".zip": true, ".cbz": true}
 
 type job struct {
 	rel  string
@@ -45,17 +42,17 @@ func (a *App) startWorkers() {
 
 func (a *App) process(j job) result {
 	r := result{rel: j.rel, size: j.size, mt: j.mt, title: titleFromRel(j.rel)}
-	zr, err := zip.OpenReader(j.abs)
+	arc, err := openArchive(j.abs)
 	if err != nil {
 		r.err = err
 		return r
 	}
-	defer zr.Close()
-	names := imageEntries(&zr.Reader)
-	r.pageCount = len(names)
-	r.meta = firstText(&zr.Reader)
-	if len(names) > 0 {
-		if rc, err := openEntry(&zr.Reader, names[0]); err == nil {
+	defer arc.Close()
+	imgs := arc.Images()
+	r.pageCount = len(imgs)
+	r.meta = arc.Meta()
+	if len(imgs) > 0 {
+		if rc, err := arc.Open(imgs[0]); err == nil {
 			if err := makeThumb(rc, a.cfg.ThumbWidth, a.coverPath(j.rel)); err == nil {
 				r.hasCover = true
 			}
@@ -95,7 +92,7 @@ func (a *App) Scan() {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if !archiveExts[strings.ToLower(filepath.Ext(d.Name()))] {
+		if indexed, _ := archiveMode(d.Name()); !indexed {
 			return nil
 		}
 		info, err := d.Info()

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -144,25 +143,25 @@ func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := filepath.Join(a.cfg.RootDir, filepath.FromSlash(relPath))
-	zr, err := zip.OpenReader(abs)
+	arc, err := openArchive(abs)
 	if err != nil {
 		http.Error(w, "cannot open archive", http.StatusInternalServerError)
 		return
 	}
-	defer zr.Close()
-	names := imageEntries(&zr.Reader)
-	if n >= len(names) {
+	defer arc.Close()
+	imgs := arc.Images()
+	if n >= len(imgs) {
 		http.NotFound(w, r)
 		return
 	}
-	rc, err := openEntry(&zr.Reader, names[n])
+	rc, err := arc.Open(imgs[n])
 	if err != nil {
 		http.Error(w, "cannot read page", http.StatusInternalServerError)
 		return
 	}
 	defer rc.Close()
 
-	ct := ctByExt[strings.ToLower(path.Ext(names[n]))]
+	ct := ctByExt[strings.ToLower(path.Ext(imgs[n]))]
 	if ct == "" {
 		ct = "application/octet-stream"
 	}

@@ -1,13 +1,16 @@
 # Shelf
 
-A small self-hosted reader for a library of sequential-image archives (`.zip` /
-`.cbz` — folders of images that, in order, tell a story). Point it at a folder,
-open a browser, read. It indexes in the background, makes cover thumbnails, and
-lets you search, favorite, and resume where you left off.
+A small self-hosted reader for a library of sequential-image archives — folders
+of images that, in order, tell a story. It reads `.zip`/`.cbz`, `.rar`/`.cbr`,
+`.7z`/`.cb7`, and the tar family (`.tar`, `.tar.gz`, `.tar.xz`, `.tar.bz2`).
+Point it at a folder, open a browser, read. It indexes in the background, makes
+cover thumbnails, and lets you search, favorite, and resume where you left off.
 
 This is an intentionally minimal, end-to-end slice: enough of every part
 (scanner → index → API → reader) to actually use, and to see which features are
-worth building out next. It is a single ~7 MB Go binary with one dependency.
+worth building out next. It is a single small Go binary. Zip needs nothing else;
+the other formats are read through `bsdtar` (libarchive), which the Docker image
+installs for you.
 
 ## Core idea
 
@@ -38,7 +41,26 @@ Open http://localhost:8080. The first scan starts automatically; covers appear
 as they're generated. Add files later and press **Scan** (or wait for the
 interval).
 
+#### `LIBRARY_PATH` vs `ROOT_DIR`
+
+They name the same thing — "where my archives live" — at two layers:
+
+- `ROOT_DIR` is the only path the *program* knows. It's where the app looks.
+- Under Docker the app runs in a container with its own filesystem, so your real
+  files aren't visible inside it. Compose bind-mounts your host folder into the
+  container, where `ROOT_DIR` is fixed at `/data/library`. **`LIBRARY_PATH` is
+  just the host folder to mount.** You set `LIBRARY_PATH`; you never touch
+  `ROOT_DIR`.
+- Running locally (below) there's no container, so you point `ROOT_DIR` straight
+  at your real folder and `LIBRARY_PATH` is irrelevant.
+
+You can skip the `.env` file and pass the value inline:
+`LIBRARY_PATH=/data/comics docker compose up --build`.
+
 ### Local (Go 1.22+)
+
+For the non-zip formats you need `bsdtar` on your PATH
+(`apt install libarchive-tools`, or `brew install libarchive`). Then:
 
 ```bash
 ROOT_DIR=/path/to/archives CACHE_DIR=/tmp/shelf-cache go run .
@@ -54,8 +76,9 @@ ROOT_DIR=/path/to/archives CACHE_DIR=/tmp/shelf-cache go run .
    writes a cover thumbnail. Workers never touch the database — the scanner is
    the sole writer, so there's no write contention.
 3. The **API** serves metadata and covers from the cache. Page images are
-   streamed **directly out of the ZIP on demand** — pages are never extracted to
-   disk, so a 2 TB library needs almost no cache space beyond thumbnails.
+   streamed **straight out of the archive on demand** — zip natively (random
+   access), other formats via libarchive. Pages are never extracted to disk, so
+   a 2 TB library needs almost no cache space beyond thumbnails.
 4. Scans run at startup, every `SCAN_INTERVAL`, and on `POST /api/scan`. There's
    no file-watcher on purpose: over SMB/NAS mounts filesystem events aren't
    reliable, so polling + a manual trigger is the robust choice.
@@ -149,12 +172,25 @@ is a small, isolated change when you want it:
   correct for normal use. If you rewrite archives in place without changing size,
   add an optional content hash to the fingerprint.
 
+- **Per-archive page cache.** For the tar family and solid rar/7z (no random
+  access), serving page *n* re-streams the archive to that entry. Since the
+  reader moves in order and preloads the next page, a small in-memory LRU of
+  decoded page bytes — keyed by `(path, mtime, n)` in `handlePage` — makes a
+  read-through effectively linear. Zip/7z with real per-entry access don't need
+  it.
+
 ## Notes & limitations
 
 - Cover generation decodes JPEG/PNG/GIF (standard library). WebP/AVIF covers
   aren't decoded in this slice, so those archives index fine but show no cover
   until you adopt the libvips path above.
-- `.cbz` is just a renamed `.zip`; both are handled. Other container formats
-  (`.cbr`/RAR, `.7z`) are not.
+- **Formats.** Zip/cbz is read natively. RAR, 7z, and the tar family are read
+  through libarchive (`bsdtar`), read-only — including RAR5. Creating or writing
+  these formats is out of scope; Shelf never modifies your files.
+- **Sequential formats are slower per page.** Zip and (mostly) 7z allow
+  per-entry access; the tar family and *solid* rar/7z archives have none, so a
+  page is produced by streaming the archive up to that entry. That's fine for
+  the typical 5–50 MB story here, but jumping around a very large solid archive
+  will feel it. The per-archive page cache below removes this.
 - Page order is natural-sorted by filename; it assumes filenames sort into
   reading order, which is the usual convention for these archives.

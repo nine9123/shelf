@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"io"
+	"os/exec"
 	"path"
 	"sort"
 	"strings"
@@ -17,46 +18,176 @@ func isImageName(name string) bool {
 	return imageExts[strings.ToLower(path.Ext(name))]
 }
 
-// imageEntries returns the archive's image file names in natural reading order.
-// Reading the central directory is cheap (it lives at the end of the file), so
-// this does not decompress anything.
-func imageEntries(zr *zip.Reader) []string {
-	var names []string
+// archiveMode reports whether a filename is an archive we index, and whether it
+// is handled natively (zip) or via libarchive/bsdtar (everything else).
+func archiveMode(name string) (indexed bool, useZip bool) {
+	l := strings.ToLower(name)
+	switch {
+	case hasAnySuffix(l, ".zip", ".cbz"):
+		return true, true
+	case hasAnySuffix(l, ".rar", ".cbr", ".7z", ".cb7", ".tar", ".cbt",
+		".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2"):
+		return true, false
+	}
+	return false, false
+}
+
+func hasAnySuffix(s string, suffixes ...string) bool {
+	for _, x := range suffixes {
+		if strings.HasSuffix(s, x) {
+			return true
+		}
+	}
+	return false
+}
+
+func sortNatural(names []string) {
+	sort.Slice(names, func(i, j int) bool { return naturalLess(names[i], names[j]) })
+}
+
+// pageArchive is a uniform view of one archive's contents, independent of the
+// container format: the image page names in reading order, the first .txt as
+// metadata, and a way to open any single entry as a stream.
+type pageArchive struct {
+	images  []string
+	meta    string
+	openFn  func(name string) (io.ReadCloser, error)
+	closeFn func() error
+}
+
+func (p *pageArchive) Images() []string                        { return p.images }
+func (p *pageArchive) Meta() string                            { return p.meta }
+func (p *pageArchive) Open(name string) (io.ReadCloser, error) { return p.openFn(name) }
+func (p *pageArchive) Close() error {
+	if p.closeFn != nil {
+		return p.closeFn()
+	}
+	return nil
+}
+
+func openArchive(absPath string) (*pageArchive, error) {
+	if _, useZip := archiveMode(absPath); useZip {
+		return openZip(absPath)
+	}
+	return openLibarchive(absPath)
+}
+
+// --- native zip backend: fast, random access, no external tools ---
+
+func openZip(absPath string) (*pageArchive, error) {
+	zr, err := zip.OpenReader(absPath)
+	if err != nil {
+		return nil, err
+	}
+	byName := make(map[string]*zip.File, len(zr.File))
+	var images []string
+	meta := ""
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
 		}
+		byName[f.Name] = f
 		if isImageName(f.Name) {
-			names = append(names, f.Name)
+			images = append(images, f.Name)
+		} else if meta == "" && strings.EqualFold(path.Ext(f.Name), ".txt") {
+			if rc, e := f.Open(); e == nil {
+				b, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
+				rc.Close()
+				meta = string(b)
+			}
 		}
 	}
-	sort.Slice(names, func(i, j int) bool { return naturalLess(names[i], names[j]) })
-	return names
+	sortNatural(images)
+	return &pageArchive{
+		images: images,
+		meta:   meta,
+		openFn: func(n string) (io.ReadCloser, error) {
+			f, ok := byName[n]
+			if !ok {
+				return nil, io.EOF
+			}
+			return f.Open()
+		},
+		closeFn: zr.Close,
+	}, nil
 }
 
-// firstText returns the contents of the first .txt entry (capped at 1 MB), or "".
-func firstText(zr *zip.Reader) string {
-	for _, f := range zr.File {
-		if strings.ToLower(path.Ext(f.Name)) == ".txt" {
-			rc, err := f.Open()
-			if err != nil {
-				return ""
-			}
+// --- libarchive backend: rar, 7z, and the tar family ---
+//
+// This shells out to `bsdtar` (the libarchive CLI), which auto-detects the
+// format and reads all of these container types read-only, including RAR and
+// 7z. tar-family and solid archives have no random access, so a page is
+// produced by streaming the archive until the requested entry — fine for the
+// modest archive sizes here; see the README for the in-memory-cache upgrade.
+
+func openLibarchive(absPath string) (*pageArchive, error) {
+	names, err := bsdtarList(absPath)
+	if err != nil {
+		return nil, err
+	}
+	var images []string
+	txtName := ""
+	for _, n := range names {
+		if isImageName(n) {
+			images = append(images, n)
+		} else if txtName == "" && strings.EqualFold(path.Ext(n), ".txt") {
+			txtName = n
+		}
+	}
+	sortNatural(images)
+	meta := ""
+	if txtName != "" {
+		if rc, e := bsdtarExtract(absPath, txtName); e == nil {
 			b, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
 			rc.Close()
-			return string(b)
+			meta = string(b)
 		}
 	}
-	return ""
+	return &pageArchive{
+		images: images,
+		meta:   meta,
+		openFn: func(n string) (io.ReadCloser, error) { return bsdtarExtract(absPath, n) },
+	}, nil
 }
 
-// openEntry returns a reader for a single named entry, decompressing only that
-// one page rather than the whole archive.
-func openEntry(zr *zip.Reader, name string) (io.ReadCloser, error) {
-	for _, f := range zr.File {
-		if f.Name == name {
-			return f.Open()
-		}
+func bsdtarList(absPath string) ([]string, error) {
+	out, err := exec.Command("bsdtar", "-tf", absPath).Output()
+	if err != nil {
+		return nil, err
 	}
-	return nil, io.EOF
+	var names []string
+	for _, n := range strings.Split(string(out), "\n") {
+		n = strings.TrimRight(n, "\r")
+		if n == "" || strings.HasSuffix(n, "/") {
+			continue
+		}
+		names = append(names, n)
+	}
+	return names, nil
+}
+
+// bsdtarExtract streams a single entry to stdout. Closing the returned reader
+// stops and reaps the child process.
+func bsdtarExtract(absPath, entry string) (io.ReadCloser, error) {
+	cmd := exec.Command("bsdtar", "-x", "-O", "-f", absPath, "--", entry)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &cmdReader{r: stdout, cmd: cmd}, nil
+}
+
+type cmdReader struct {
+	r   io.ReadCloser
+	cmd *exec.Cmd
+}
+
+func (c *cmdReader) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+func (c *cmdReader) Close() error {
+	c.r.Close() // unblock the child if we stopped reading early
+	return c.cmd.Wait()
 }

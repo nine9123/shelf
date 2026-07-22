@@ -13,7 +13,12 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/shelf .
 
 # ---- runtime ----
 FROM debian:bookworm-slim
-RUN useradd -r -u 10001 shelf \
+# bsdtar (libarchive) reads the non-zip formats: rar, 7z, and the tar family.
+# zip/cbz is handled natively by the binary and needs nothing here.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libarchive-tools \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -r -u 10001 shelf \
  && mkdir -p /data/library /data/cache \
  && chown -R shelf /data
 COPY --from=build /out/shelf /usr/local/bin/shelf
