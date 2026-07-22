@@ -13,20 +13,20 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/shelf .
 
 # ---- runtime ----
 FROM debian:bookworm-slim
-# bsdtar (libarchive) reads the non-zip formats: rar, 7z, and the tar family.
-# zip/cbz is handled natively by the binary and needs nothing here.
+# bsdtar (libarchive) reads the non-zip formats (rar, 7z, tar family); zip/cbz is
+# native. gosu lets the entrypoint drop from root to a configurable PUID/PGID, so
+# a bind-mounted cache works regardless of who owns it on the host.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libarchive-tools \
+ && apt-get install -y --no-install-recommends libarchive-tools gosu \
  && rm -rf /var/lib/apt/lists/* \
- && useradd -r -u 10001 shelf \
- && mkdir -p /data/library /data/cache \
- && chown -R shelf /data
+ && mkdir -p /data/library /data/cache
 COPY --from=build /out/shelf /usr/local/bin/shelf
-USER shelf
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV ROOT_DIR=/data/library \
     CACHE_DIR=/data/cache \
-    LISTEN_ADDR=:8080
+    LISTEN_ADDR=:8080 \
+    PUID=1000 \
+    PGID=1000
 EXPOSE 8080
-# Only the cache is a volume. The library is bind-mounted read-only at run time.
-VOLUME ["/data/cache"]
-ENTRYPOINT ["/usr/local/bin/shelf"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

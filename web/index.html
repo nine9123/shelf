@@ -241,7 +241,7 @@
   });
 
   /* scan + status */
-  let wasScanning = false, statusTimer;
+  let wasScanning = false, statusTimer, lastIndexed = -1;
   $('#scanBtn').addEventListener('click', async () => {
     await api('/api/scan', { method:'POST' });
     wasScanning = true;
@@ -251,15 +251,18 @@
     try{
       const d = await (await api('/api/status')).json();
       const c = d.counts || {};
+      const indexed = c.indexed || 0;
       $('#status').textContent = d.scanning
-        ? 'Scanning…'
-        : ((c.indexed || 0) + ' indexed' + (c.error ? (' · ' + c.error + ' errors') : ''));
+        ? ('Scanning… ' + indexed + ' indexed')
+        : (indexed + ' indexed' + (c.error ? (' · ' + c.error + ' errors') : ''));
       if(d.scanning){
         wasScanning = true;
+        if(indexed !== lastIndexed){ lastIndexed = indexed; loadList(); } // populate live as rows land
         clearTimeout(statusTimer);
         statusTimer = setTimeout(pollStatus, 1200);
       } else if(wasScanning){
         wasScanning = false;
+        lastIndexed = indexed;
         loadList();
       }
     }catch(_){}

@@ -33,7 +33,7 @@ files — what you've favorited and how far you've read — lives in a separate
 
 ```bash
 cp .env.example .env
-# edit .env and set LIBRARY_PATH to your archive folder
+# edit .env: set LIBRARY_PATH and CACHE_PATH, and PUID/PGID to match your files
 docker compose up --build
 ```
 
@@ -54,8 +54,28 @@ They name the same thing — "where my archives live" — at two layers:
 - Running locally (below) there's no container, so you point `ROOT_DIR` straight
   at your real folder and `LIBRARY_PATH` is irrelevant.
 
-You can skip the `.env` file and pass the value inline:
-`LIBRARY_PATH=/data/comics docker compose up --build`.
+The cache works the exact same way: **`CACHE_PATH`** is the host folder, and
+`CACHE_DIR` (`/data/cache`) is where the app writes inside the container. You set
+`CACHE_PATH`; you never touch `CACHE_DIR`.
+
+You can skip the `.env` file and pass values inline:
+`LIBRARY_PATH=/data/comics CACHE_PATH=/data/shelf-cache docker compose up --build`.
+
+#### Where the cache lives
+
+`CACHE_PATH` is a host folder you choose (see `.env`); Shelf keeps `index.db`,
+`covers/`, and `user.db` there. It's created if missing and defaults to `./cache`
+next to the compose file.
+
+Because the server runs unprivileged, the container starts as root only long
+enough to take ownership of that folder, then drops to **`PUID:PGID`** before
+doing anything else. Set those to the account that owns your archives (`id -u` /
+`id -g`) so both library reads and cache writes work with no manual `chown`. The
+library stays read-only and is never modified.
+
+> Moving the cache to a new `CACHE_PATH` (e.g. from an earlier named volume)
+> starts a fresh index — that's fine, it's regenerable. To carry over favorites
+> and reading progress, copy the old `user.db` into the new folder first.
 
 ### Local (Go 1.22+)
 
@@ -102,7 +122,7 @@ by **path**, so they're stable across rebuilds even though ids are reassigned.
 
 ## Configuration
 
-All via environment variables:
+The app itself reads these:
 
 | Var | Default | Meaning |
 |-----|---------|---------|
@@ -113,6 +133,14 @@ All via environment variables:
 | `WORKER_CONCURRENCY` | number of CPUs | Parallel indexers |
 | `THUMB_WIDTH` | `400` | Cover width in px |
 | `INDEX_DB_PATH` / `USER_DB_PATH` | under `CACHE_DIR` | Override DB locations |
+
+These are Docker-only (used by Compose and the entrypoint, not the binary):
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `LIBRARY_PATH` | — (required) | Host archive folder → mounted at `ROOT_DIR` |
+| `CACHE_PATH` | `./cache` | Host cache folder → mounted at `CACHE_DIR` |
+| `PUID` / `PGID` | `1000` | User/group the server runs as |
 
 ## Resetting the cache
 
