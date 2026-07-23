@@ -84,7 +84,9 @@
     border:1px solid var(--line);border-radius:var(--radius);flex:none}
   .dinfo{min-width:0}
   .dcat{font-size:.95rem;margin-bottom:.25rem}
-  .dtags{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.7rem}
+  .dtags{margin-top:.7rem}
+  .tgroup{display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem;margin-bottom:.45rem}
+  .tgl{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;min-width:84px;flex:none}
   .chip{font-size:.78rem;padding:.25rem .55rem;border-radius:999px;background:var(--panel-2);
     border:1px solid var(--line);color:var(--text);cursor:pointer;line-height:1.2}
   .chip:hover{border-color:var(--accent-dim);color:var(--accent)}
@@ -104,6 +106,11 @@
   .hovercard .hc-sub{color:var(--muted);margin-bottom:.4rem}
   .hovercard .hc-tags{color:var(--text);line-height:1.5;max-height:9em;overflow:hidden}
   .hovercard .hc-ns{color:var(--muted)}
+  .acbox{position:fixed;z-index:31;background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    box-shadow:0 10px 30px rgba(0,0,0,.5);max-height:280px;overflow:auto;min-width:220px;padding:.25rem 0}
+  .acitem{padding:.4rem .7rem;cursor:pointer;font-size:.85rem;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis;max-width:360px}
+  .acitem:hover,.acitem.sel{background:var(--panel-2);color:var(--accent)}
 </style>
 </head>
 <body>
@@ -117,6 +124,8 @@
     <div id="status" class="status"></div>
     <button id="scanBtn">Scan</button>
   </header>
+
+  <div id="acBox" class="acbox" hidden></div>
 
   <main>
     <div id="helpBox" class="helpbox" hidden>
@@ -291,6 +300,7 @@
   //   anything else        library
   function applyRoute(){
     hoverLeave();
+    hideAC();
     const rd = location.hash.match(/^#\/read\/(\d+)(?:\/(\d+))?/);
     const cm = location.hash.match(/^#\/comic\/(\d+)/);
     if(rd){
@@ -317,6 +327,7 @@
       applyStageClasses();
       $('#reader').classList.add('open');
       $('#reader').setAttribute('aria-hidden','false');
+      syncScrollLock();
       let p = (page == null || isNaN(page)) ? (d.lastPage || 0) : page;
       p = clampPage(p);
       if(reader.spread) p -= p % 2;
@@ -336,6 +347,14 @@
     $('#rImg').src = '';
     $('#rImg2').hidden = true;
     reader.id = null;
+    syncScrollLock();
+  }
+
+  // Lock the page scroll while an overlay is open, so there's no phantom second
+  // scrollbar scrolling the library behind the reader/detail view.
+  function syncScrollLock(){
+    const open = $('#reader').classList.contains('open') || $('#detail').classList.contains('open');
+    document.documentElement.style.overflow = open ? 'hidden' : '';
   }
 
   // --- detail view ---
@@ -359,18 +378,22 @@
     $('#detail').classList.add('open');
     $('#detail').setAttribute('aria-hidden','false');
     $('.dbody').scrollTop = 0;
+    syncScrollLock();
   }
 
   function renderDetailTags(tags){
     const box = $('#dTags');
     box.innerHTML = '';
     for(const ns of Object.keys(tags).sort()){
+      const row = el('div','tgroup');
+      row.appendChild(Object.assign(el('span','tgl'), {textContent: ns}));
       for(const tag of tags[ns]){
         const chip = el('button','chip');
-        chip.textContent = ns + ': ' + tag;
+        chip.textContent = tag;
         chip.addEventListener('click', () => filterByTag(ns, tag));
-        box.appendChild(chip);
+        row.appendChild(chip);
       }
+      box.appendChild(row);
     }
   }
 
@@ -405,6 +428,7 @@
     $('#dPageGrid').innerHTML = ''; // stop pending lazy thumbnails
     $('#dCover').removeAttribute('src');
     detail.id = null;
+    syncScrollLock();
   }
 
   function renderPage(){
@@ -564,6 +588,72 @@
     box.style.top = y + 'px';
   }
   function esc(s){ return (s + '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+  // --- search autocomplete: after "namespace:", suggest matching tag values ---
+  let acItems = [], acIndex = -1, acT;
+  function currentToken(){
+    const inp = $('#q');
+    const pos = inp.selectionStart == null ? inp.value.length : inp.selectionStart;
+    const upto = inp.value.slice(0, pos);
+    const sp = upto.lastIndexOf(' ');
+    return { start: sp + 1, pos, text: upto.slice(sp + 1) };
+  }
+  function scheduleAutocomplete(){
+    clearTimeout(acT);
+    const m = currentToken().text.match(/^([\w]+):(.*)$/);
+    if(!m){ hideAC(); return; }
+    const ns = m[1], prefix = m[2].replace(/^"/, '');
+    acT = setTimeout(async () => {
+      try {
+        const d = await (await api('/api/tags?ns=' + encodeURIComponent(ns) + '&prefix=' + encodeURIComponent(prefix))).json();
+        showAC(ns, d.tags || []);
+      } catch(_) { hideAC(); }
+    }, 160);
+  }
+  function showAC(ns, tags){
+    if(tags.length === 0){ hideAC(); return; }
+    acItems = tags.map(t => ({ ns, tag: t }));
+    acIndex = -1;
+    const box = $('#acBox');
+    box.innerHTML = '';
+    acItems.forEach((it, i) => {
+      const d = el('div','acitem');
+      d.textContent = it.tag;
+      d.addEventListener('mousedown', e => { e.preventDefault(); pickAC(i); });
+      box.appendChild(d);
+    });
+    const r = $('#q').getBoundingClientRect();
+    box.style.left = r.left + 'px';
+    box.style.top = (r.bottom + 4) + 'px';
+    box.style.minWidth = r.width + 'px';
+    box.hidden = false;
+  }
+  function hideAC(){ $('#acBox').hidden = true; acItems = []; acIndex = -1; }
+  function pickAC(i){
+    const it = acItems[i];
+    if(!it) return;
+    const inp = $('#q'), tok = currentToken();
+    const val = it.tag.includes(' ') ? (it.ns + ':"' + it.tag + '"') : (it.ns + ':' + it.tag);
+    inp.value = inp.value.slice(0, tok.start) + val + ' ' + inp.value.slice(tok.pos);
+    state.q = inp.value;
+    hideAC();
+    inp.focus();
+    loadList(true);
+  }
+  function paintAC(){
+    const items = $('#acBox').children;
+    for(let i = 0; i < items.length; i++) items[i].classList.toggle('sel', i === acIndex);
+    if(acIndex >= 0 && items[acIndex]) items[acIndex].scrollIntoView({ block: 'nearest' });
+  }
+  $('#q').addEventListener('input', scheduleAutocomplete);
+  $('#q').addEventListener('keydown', e => {
+    if($('#acBox').hidden) return;
+    if(e.key === 'ArrowDown'){ e.preventDefault(); acIndex = Math.min(acIndex + 1, acItems.length - 1); paintAC(); }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); acIndex = Math.max(acIndex - 1, 0); paintAC(); }
+    else if(e.key === 'Enter' && acIndex >= 0){ e.preventDefault(); pickAC(acIndex); }
+    else if(e.key === 'Escape'){ hideAC(); }
+  });
+  $('#q').addEventListener('blur', () => setTimeout(hideAC, 120));
   $('#rFit').addEventListener('click', () => { reader.fitH = !reader.fitH; savePrefs(); syncReaderButtons(); });
   $('#rSpread').addEventListener('click', () => {
     reader.spread = !reader.spread;

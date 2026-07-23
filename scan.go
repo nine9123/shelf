@@ -198,6 +198,9 @@ ON CONFLICT(path) DO UPDATE SET
 		log.Printf("scan: write %s: %v", r.rel, err)
 		return
 	}
+	if !r.hasCover {
+		os.Remove(a.coverPath(r.rel)) // clear any stale cover so handleCover won't serve it
+	}
 	// Refresh this archive's tag rows (identity by path -> id).
 	var id int64
 	if a.index.QueryRow(`SELECT id FROM archives WHERE path = ?`, r.rel).Scan(&id) != nil {

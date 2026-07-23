@@ -47,6 +47,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/errors", a.handleErrors)
 	mux.HandleFunc("GET /api/id-report", a.handleIDReport)
 	mux.HandleFunc("GET /api/namespaces", a.handleNamespaces)
+	mux.HandleFunc("GET /api/tags", a.handleTagValues)
 	mux.HandleFunc("GET /", a.handleIndex)
 	return mux
 }
@@ -149,6 +150,28 @@ func (a *App) handleDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *App) handleTagValues(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("ns")
+	limit := clampInt(atoiDefault(r.URL.Query().Get("limit"), 12), 1, 50)
+	out := []string{}
+	if ns != "" {
+		esc := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(r.URL.Query().Get("prefix"))
+		rows, err := a.index.Query(
+			`SELECT DISTINCT tag FROM tags WHERE namespace = ? COLLATE NOCASE AND tag LIKE ? ESCAPE '\' COLLATE NOCASE ORDER BY tag LIMIT ?`,
+			ns, esc+"%", limit)
+		if err == nil {
+			for rows.Next() {
+				var t string
+				if rows.Scan(&t) == nil {
+					out = append(out, t)
+				}
+			}
+			rows.Close()
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tags": out})
+}
+
 func (a *App) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 	type ns struct {
 		Namespace string `json:"namespace"`
@@ -169,13 +192,15 @@ func (a *App) handleNamespaces(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleCover(w http.ResponseWriter, r *http.Request) {
-	relPath, _, ok := a.lookup(r.PathValue("id"))
-	if !ok {
-		http.NotFound(w, r)
+	var relPath string
+	var hc int
+	if a.index.QueryRow(`SELECT path, has_cover FROM archives WHERE id=? AND status='indexed'`,
+		r.PathValue("id")).Scan(&relPath, &hc) != nil || hc == 0 {
+		http.NotFound(w, r) // no row, or no valid cover — don't serve a possibly-stale file
 		return
 	}
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeFile(w, r, a.coverPath(relPath)) // 404s cleanly if the cover is missing
+	http.ServeFile(w, r, a.coverPath(relPath))
 }
 
 func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
