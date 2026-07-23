@@ -25,6 +25,7 @@ type archiveItem struct {
 	Path      string `json:"path"`
 	Title     string `json:"title"`
 	PageCount int    `json:"pageCount"`
+	Category  string `json:"category"`
 	HasCover  bool   `json:"hasCover"`
 	Favorite  bool   `json:"favorite"`
 }
@@ -43,32 +44,41 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/status", a.handleStatus)
 	mux.HandleFunc("GET /api/errors", a.handleErrors)
 	mux.HandleFunc("GET /api/id-report", a.handleIDReport)
+	mux.HandleFunc("GET /api/namespaces", a.handleNamespaces)
 	mux.HandleFunc("GET /", a.handleIndex)
 	return mux
 }
 
 func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	favOnly := r.URL.Query().Get("fav") == "1"
 	limit := clampInt(atoiDefault(r.URL.Query().Get("limit"), 60), 1, 200)
 	offset := atoiDefault(r.URL.Query().Get("offset"), 0)
 	if offset < 0 {
 		offset = 0
 	}
+	terms, tagFilters, category := parseQuery(r.URL.Query().Get("q"))
 	favSet := a.favoriteIDSet()
 
 	var sb strings.Builder
 	var args []any
-	sb.WriteString(`SELECT id, path, identity, title, page_count, has_cover FROM archives WHERE status='indexed'`)
+	sb.WriteString(`SELECT id, path, identity, title, page_count, has_cover, category FROM archives WHERE status='indexed'`)
 	if r.URL.Query().Get("hideDupes") == "1" {
 		// Collapse duplicate IDs to a single representative (the lowest row id),
 		// so a mistakenly-shared ID shows once instead of cluttering the grid.
 		sb.WriteString(` AND id IN (SELECT MIN(id) FROM archives WHERE status='indexed' GROUP BY identity)`)
 	}
-	if q != "" {
+	for _, term := range terms { // plain words: title / path / info text
 		sb.WriteString(` AND (title LIKE ? OR meta LIKE ? OR path LIKE ?)`)
-		like := "%" + q + "%"
+		like := "%" + term + "%"
 		args = append(args, like, like, like)
+	}
+	if category != "" {
+		sb.WriteString(` AND category = ? COLLATE NOCASE`)
+		args = append(args, category)
+	}
+	for _, tf := range tagFilters { // each tag filter ANDed via its own subquery
+		sb.WriteString(` AND id IN (SELECT archive_id FROM tags WHERE namespace = ? COLLATE NOCASE AND tag = ? COLLATE NOCASE)`)
+		args = append(args, tf.ns, tf.val)
 	}
 	if favOnly {
 		idents := a.favoriteIdentities()
@@ -95,7 +105,7 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 		var it archiveItem
 		var identity string
 		var hc int
-		if err := rows.Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc); err != nil {
+		if err := rows.Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &it.Category); err != nil {
 			continue
 		}
 		it.HasCover = hc == 1
@@ -108,20 +118,52 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleDetail(w http.ResponseWriter, r *http.Request) {
 	var it archiveItem
 	var hc int
-	var meta, identity string
+	var meta, identity, category string
 	err := a.index.QueryRow(
-		`SELECT id, path, identity, title, page_count, has_cover, meta FROM archives WHERE id=? AND status='indexed'`,
-		r.PathValue("id")).Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &meta)
+		`SELECT id, path, identity, title, page_count, has_cover, meta, category FROM archives WHERE id=? AND status='indexed'`,
+		r.PathValue("id")).Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &meta, &category)
 	if err != nil {
 		http.NotFound(w, r)
 		return
+	}
+	// Tags grouped by namespace, e.g. {"artist":["foo"],"parody":["bar","baz"]}.
+	tags := map[string][]string{}
+	if rows, err := a.index.Query(
+		`SELECT namespace, tag FROM tags WHERE archive_id=? ORDER BY namespace, tag`, it.ID); err == nil {
+		for rows.Next() {
+			var ns, tag string
+			if rows.Scan(&ns, &tag) == nil {
+				tags[ns] = append(tags[ns], tag)
+			}
+		}
+		rows.Close()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": it.ID, "path": it.Path, "title": it.Title,
 		"pageCount": it.PageCount, "hasCover": hc == 1,
 		"favorite": a.isFavorite(identity), "meta": meta,
 		"lastPage": a.readProgress(identity),
+		"category": category, "tags": tags,
 	})
+}
+
+func (a *App) handleNamespaces(w http.ResponseWriter, r *http.Request) {
+	type ns struct {
+		Namespace string `json:"namespace"`
+		Count     int    `json:"count"`
+	}
+	out := []ns{}
+	if rows, err := a.index.Query(
+		`SELECT namespace, COUNT(*) FROM tags GROUP BY namespace ORDER BY namespace`); err == nil {
+		for rows.Next() {
+			var n ns
+			if rows.Scan(&n.Namespace, &n.Count) == nil {
+				out = append(out, n)
+			}
+		}
+		rows.Close()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"namespaces": out})
 }
 
 func (a *App) handleCover(w http.ResponseWriter, r *http.Request) {

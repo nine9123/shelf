@@ -107,8 +107,8 @@ ROOT_DIR=/path/to/archives CACHE_DIR=/tmp/shelf-cache go run .
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/archives?q=&fav=1&limit=&offset=` | List / search |
-| GET | `/api/archives/{id}` | Detail (metadata, favorite, `lastPage`) |
+| GET | `/api/archives?q=&fav=1&hideDupes=1&limit=&offset=` | List / search |
+| GET | `/api/archives/{id}` | Detail (metadata, category, grouped tags, favorite, `lastPage`) |
 | GET | `/api/archives/{id}/cover` | Cover thumbnail (JPEG) |
 | GET | `/api/archives/{id}/page/{n}` | Stream page image `n` (ETag-cached) |
 | PUT / DELETE | `/api/archives/{id}/favorite` | Toggle favorite |
@@ -116,9 +116,29 @@ ROOT_DIR=/path/to/archives CACHE_DIR=/tmp/shelf-cache go run .
 | GET | `/api/favorites` | Favorited archives |
 | POST | `/api/scan` | Trigger a scan |
 | GET | `/api/status` | Counts, scanning flag, last scan time |
+| GET | `/api/errors` | Archives that failed to index, with the reason |
+| GET | `/api/id-report` | Duplicate IDs (with size + page count) and files missing an ID |
+| GET | `/api/namespaces` | Distinct tag namespaces present, with counts |
 
 `id` is the cache row id (fine within a session). Favorites/progress are stored
-by **path**, so they're stable across rebuilds even though ids are reassigned.
+by **identity** (the leading `#id`), so they follow a file across moves, renames,
+and re-encoding, and survive rebuilding the cache.
+
+### Search syntax (the `q` parameter)
+
+- Plain words match the title, path, and raw info text (AND across words).
+- `namespace:value` filters by a tag — e.g. `artist:foo`, `parody:bar`. Tags are
+  always namespaced so there's no ambiguity about what you're matching.
+- Quote values containing spaces: `artist:"john doe"`.
+- `category:name` filters the category.
+- Everything combines with **AND**: `parody:touhou artist:"john doe"`.
+
+### Metadata & tags
+
+If an archive contains an `info.txt`, the scanner parses its `Category:` line and
+its `> namespace: v1, v2` tag lines into a searchable tag index (`tags` table) and
+a `category` column — both derived, both in the disposable cache, rebuilt on scan.
+Length isn't parsed; the archive's image count is the length.
 
 ## Configuration
 

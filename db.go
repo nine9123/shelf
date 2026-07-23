@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS archives (
     mtime       INTEGER NOT NULL DEFAULT 0,    -- unix; cheap change-detection fingerprint
     page_count  INTEGER NOT NULL DEFAULT 0,
     meta        TEXT NOT NULL DEFAULT '',      -- raw .txt contents from inside the archive
+    category    TEXT NOT NULL DEFAULT '',      -- parsed from info.txt "Category:"
     has_cover   INTEGER NOT NULL DEFAULT 0,
     status      TEXT NOT NULL DEFAULT 'pending', -- pending | indexed | error
     error       TEXT NOT NULL DEFAULT '',
@@ -31,7 +32,18 @@ CREATE TABLE IF NOT EXISTS archives (
 );
 CREATE INDEX IF NOT EXISTS idx_archives_status   ON archives(status);
 CREATE INDEX IF NOT EXISTS idx_archives_title    ON archives(title);
-CREATE INDEX IF NOT EXISTS idx_archives_identity ON archives(identity);`
+CREATE INDEX IF NOT EXISTS idx_archives_identity ON archives(identity);
+CREATE INDEX IF NOT EXISTS idx_archives_category ON archives(category);
+
+-- Tags parsed from info.txt, one row per (archive, namespace, tag). Disposable
+-- cache like everything here; rebuilt from the archives on scan.
+CREATE TABLE IF NOT EXISTS tags (
+    archive_id INTEGER NOT NULL,
+    namespace  TEXT NOT NULL,
+    tag        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tags_lookup  ON tags(namespace, tag);
+CREATE INDEX IF NOT EXISTS idx_tags_archive ON tags(archive_id);`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
@@ -41,6 +53,11 @@ CREATE INDEX IF NOT EXISTS idx_archives_identity ON archives(identity);`
 	if _, err := db.Exec(`ALTER TABLE archives ADD COLUMN identity TEXT NOT NULL DEFAULT ''`); err == nil {
 		db.Exec(`UPDATE archives SET status='pending' WHERE status='indexed'`)
 		log.Printf("index.db: added identity column; will re-index to backfill on next scan")
+	}
+	// Same for a pre-category cache: backfill category + tags by re-indexing.
+	if _, err := db.Exec(`ALTER TABLE archives ADD COLUMN category TEXT NOT NULL DEFAULT ''`); err == nil {
+		db.Exec(`UPDATE archives SET status='pending' WHERE status='indexed'`)
+		log.Printf("index.db: added category column; will re-index to backfill category and tags")
 	}
 	return db, nil
 }

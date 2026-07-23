@@ -43,6 +43,13 @@
   .sub{color:var(--muted);font-size:.72rem;margin-top:.2rem}
   .empty{color:var(--muted);text-align:center;padding:4rem 1rem}
   .sentinel{color:var(--muted);text-align:center;padding:1.4rem;min-height:1px;font-size:.85rem}
+  .helpbox{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:.8rem 1rem;margin-bottom:1.1rem;max-width:760px;font-size:.9rem}
+  .helpbox .hb-title{font-weight:600;margin-bottom:.4rem}
+  .helpbox ul{margin:.2rem 0 .6rem;padding-left:1.2rem;line-height:1.75}
+  .helpbox code{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;padding:.05rem .3rem}
+  .helpbox .hb-ns{color:var(--muted);border-top:1px solid var(--line);padding-top:.55rem}
+  .helpbox #helpNs{color:var(--accent)}
 
   /* reader */
   .reader{position:fixed;inset:0;z-index:20;background:#0c0c0e;display:none;flex-direction:column}
@@ -70,7 +77,8 @@
 <body>
   <header>
     <div class="brand">Shelf<span>.</span></div>
-    <input id="q" type="search" placeholder="Search title, notes, path…" autocomplete="off">
+    <input id="q" type="search" placeholder="Search — words, or artist:foo  parody:bar" autocomplete="off">
+    <button id="qHelp" class="toggle" title="Search syntax" aria-pressed="false">?</button>
     <button id="favBtn" class="toggle" aria-pressed="false">Favorites</button>
     <button id="dupBtn" class="toggle" title="Hide comics that share an ID">Hide dupes</button>
     <div class="spacer"></div>
@@ -79,6 +87,17 @@
   </header>
 
   <main>
+    <div id="helpBox" class="helpbox" hidden>
+      <div class="hb-title">Search syntax</div>
+      <ul>
+        <li>Plain words match the title / info text — <code>space wizard</code></li>
+        <li>Filter by tag as <code>namespace:value</code> — <code>artist:foo</code></li>
+        <li>Quote values with spaces — <code>artist:"john doe"</code></li>
+        <li>All terms must match (AND) — <code>parody:touhou artist:foo</code></li>
+        <li>Filter the category with <code>category:doujinshi</code></li>
+      </ul>
+      <div class="hb-ns">Namespaces in your library: <span id="helpNs">…</span></div>
+    </div>
     <div id="grid" class="grid"></div>
     <div id="sentinel" class="sentinel"></div>
     <div id="empty" class="empty" hidden></div>
@@ -192,8 +211,9 @@
       cover.addEventListener('click', () => { location.hash = '#/read/' + it.id; });
 
       const meta = el('div','meta');
+      const sub = it.pageCount + ' pages' + (it.category ? ' · ' + it.category : '');
       meta.appendChild(Object.assign(el('div','title'), {textContent: it.title || '(untitled)'}));
-      meta.appendChild(Object.assign(el('div','sub'), {textContent: it.pageCount + ' pages'}));
+      meta.appendChild(Object.assign(el('div','sub'), {textContent: sub}));
 
       card.appendChild(cover); card.appendChild(meta);
       grid.appendChild(card);
@@ -330,6 +350,21 @@
     e.currentTarget.setAttribute('aria-pressed', state.hideDupes ? 'true' : 'false');
     savePrefs();
     loadList(true);
+  });
+  let nsLoaded = false;
+  $('#qHelp').addEventListener('click', async e => {
+    const box = $('#helpBox');
+    const show = box.hidden;
+    box.hidden = !show;
+    e.currentTarget.setAttribute('aria-pressed', show ? 'true' : 'false');
+    if(show && !nsLoaded){
+      nsLoaded = true;
+      try {
+        const d = await (await api('/api/namespaces')).json();
+        const list = (d.namespaces || []).map(n => n.namespace + ' (' + n.count + ')').join(', ');
+        $('#helpNs').textContent = list || 'none yet — index some tagged archives';
+      } catch(_) { $('#helpNs').textContent = ''; }
+    }
   });
   $('#rClose').addEventListener('click', exitToLibrary);
   $('#rFirst').addEventListener('click', () => reader.rtl ? goLast() : goFirst());

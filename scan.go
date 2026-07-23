@@ -22,6 +22,8 @@ type result struct {
 	mt        int64
 	pageCount int
 	meta      string
+	category  string
+	tags      []tagPair
 	hasCover  bool
 	err       error
 }
@@ -51,6 +53,7 @@ func (a *App) process(j job) result {
 	imgs := arc.Images()
 	r.pageCount = len(imgs)
 	r.meta = arc.Meta()
+	r.category, r.tags = parseInfo(r.meta)
 	if len(imgs) > 0 {
 		if rc, err := arc.Open(imgs[0]); err == nil {
 			if err := makeThumb(rc, a.cfg.ThumbWidth, a.coverPath(j.rel)); err == nil {
@@ -143,9 +146,12 @@ func (a *App) Scan() {
 		}
 	}
 
-	// 4. prune rows whose files are gone, and drop their covers
+	// 4. prune rows whose files are gone, and drop their covers + tags
 	for rel := range known {
 		if _, ok := disk[rel]; !ok {
+			var id int64
+			a.index.QueryRow(`SELECT id FROM archives WHERE path = ?`, rel).Scan(&id)
+			a.index.Exec(`DELETE FROM tags WHERE archive_id = ?`, id)
 			a.index.Exec(`DELETE FROM archives WHERE path = ?`, rel)
 			os.Remove(a.coverPath(rel))
 		}
@@ -181,15 +187,25 @@ func (a *App) writeResult(r result) {
 		log.Printf("scan: index %s: %v", r.rel, r.err)
 	}
 	_, err := a.index.Exec(`
-INSERT INTO archives (path, identity, title, size, mtime, page_count, meta, has_cover, status, error, indexed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO archives (path, identity, title, size, mtime, page_count, meta, category, has_cover, status, error, indexed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(path) DO UPDATE SET
     identity=excluded.identity, title=excluded.title, size=excluded.size, mtime=excluded.mtime,
-    page_count=excluded.page_count, meta=excluded.meta, has_cover=excluded.has_cover,
+    page_count=excluded.page_count, meta=excluded.meta, category=excluded.category, has_cover=excluded.has_cover,
     status=excluded.status, error=excluded.error, indexed_at=excluded.indexed_at`,
-		r.rel, identityOf(r.rel), r.title, r.size, r.mt, r.pageCount, r.meta, b2i(r.hasCover), status, errStr, time.Now().Unix())
+		r.rel, identityOf(r.rel), r.title, r.size, r.mt, r.pageCount, r.meta, r.category, b2i(r.hasCover), status, errStr, time.Now().Unix())
 	if err != nil {
 		log.Printf("scan: write %s: %v", r.rel, err)
+		return
+	}
+	// Refresh this archive's tag rows (identity by path -> id).
+	var id int64
+	if a.index.QueryRow(`SELECT id FROM archives WHERE path = ?`, r.rel).Scan(&id) != nil {
+		return
+	}
+	a.index.Exec(`DELETE FROM tags WHERE archive_id = ?`, id)
+	for _, t := range r.tags {
+		a.index.Exec(`INSERT INTO tags (archive_id, namespace, tag) VALUES (?, ?, ?)`, id, t.ns, t.val)
 	}
 }
 
