@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -36,6 +37,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/archives", a.handleList)
 	mux.HandleFunc("GET /api/archives/{id}", a.handleDetail)
 	mux.HandleFunc("GET /api/archives/{id}/cover", a.handleCover)
+	mux.HandleFunc("PUT /api/archives/{id}/cover", a.handleSetCover)
+	mux.HandleFunc("POST /api/archives/{id}/cover/refresh", a.handleRefreshCover)
 	mux.HandleFunc("GET /api/archives/{id}/page/{n}", a.handlePage)
 	mux.HandleFunc("GET /api/archives/{id}/thumb/{n}", a.handleThumb)
 	mux.HandleFunc("PUT /api/archives/{id}/favorite", a.handleFavAdd)
@@ -141,12 +144,14 @@ func (a *App) handleDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		rows.Close()
 	}
+	coverPage, coverOverridden := a.coverOverridePage(identity) // page 0 when not overridden
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": it.ID, "path": it.Path, "title": it.Title,
 		"pageCount": it.PageCount, "hasCover": hc == 1,
 		"favorite": a.isFavorite(identity), "meta": meta,
 		"lastPage": a.readProgress(identity),
 		"category": category, "tags": tags,
+		"coverPage": coverPage, "coverOverridden": coverOverridden,
 	})
 }
 
@@ -199,8 +204,77 @@ func (a *App) handleCover(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r) // no row, or no valid cover — don't serve a possibly-stale file
 		return
 	}
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	http.ServeFile(w, r, a.coverPath(relPath))
+	f := a.coverPath(relPath)
+	info, err := os.Stat(f)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	// Strong ETag from the cover file's mtime+size, revalidated each request, so a
+	// regenerated cover busts the browser cache everywhere (cheap 304 when unchanged).
+	w.Header().Set("ETag", fmt.Sprintf(`"c%x-%x"`, info.ModTime().UnixNano(), info.Size()))
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFile(w, r, f)
+}
+
+// regenCover rebuilds one archive's cached cover from the given page and updates
+// has_cover. A stale cover is removed if the chosen page can't be thumbnailed.
+func (a *App) regenCover(id string, page int) bool {
+	relPath, _, ok := a.lookup(id)
+	if !ok {
+		return false
+	}
+	arc, err := openArchive(filepath.Join(a.cfg.RootDir, filepath.FromSlash(relPath)))
+	if err != nil {
+		return false
+	}
+	defer arc.Close()
+	imgs := arc.Images()
+	has := false
+	if len(imgs) > 0 {
+		if rc, err := arc.Open(imgs[clampInt(page, 0, len(imgs)-1)]); err == nil {
+			if makeThumb(rc, a.cfg.ThumbWidth, a.coverPath(relPath)) == nil {
+				has = true
+			}
+			rc.Close()
+		}
+	}
+	if !has {
+		os.Remove(a.coverPath(relPath))
+	}
+	a.index.Exec(`UPDATE archives SET has_cover=? WHERE id=?`, b2i(has), id)
+	return has
+}
+
+func (a *App) handleSetCover(w http.ResponseWriter, r *http.Request) {
+	identity, ok := a.identityForID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	var body struct {
+		Page int `json:"page"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Page < 0 {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	a.user.Exec(`INSERT INTO cover_override(identity, page, updated_at) VALUES(?, ?, ?)
+ON CONFLICT(identity) DO UPDATE SET page=excluded.page, updated_at=excluded.updated_at`,
+		identity, body.Page, time.Now().Unix())
+	has := a.regenCover(r.PathValue("id"), body.Page)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "page": body.Page, "hasCover": has})
+}
+
+func (a *App) handleRefreshCover(w http.ResponseWriter, r *http.Request) {
+	identity, ok := a.identityForID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	page, _ := a.coverOverridePage(identity) // 0 when there's no override
+	has := a.regenCover(r.PathValue("id"), page)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hasCover": has})
 }
 
 func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
@@ -492,6 +566,31 @@ func (a *App) lookup(id string) (relPath string, mtime int64, ok bool) {
 		return "", 0, false
 	}
 	return relPath, mtime, true
+}
+
+func (a *App) coverOverrides() map[string]int {
+	m := map[string]int{}
+	rows, err := a.user.Query(`SELECT identity, page FROM cover_override`)
+	if err != nil {
+		return m
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var p int
+		if rows.Scan(&id, &p) == nil {
+			m[id] = p
+		}
+	}
+	return m
+}
+
+func (a *App) coverOverridePage(identity string) (int, bool) {
+	var p int
+	if a.user.QueryRow(`SELECT page FROM cover_override WHERE identity=?`, identity).Scan(&p) != nil {
+		return 0, false
+	}
+	return p, true
 }
 
 func (a *App) favoriteIdentities() []string {

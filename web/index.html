@@ -91,11 +91,18 @@
     border:1px solid var(--line);color:var(--text);cursor:pointer;line-height:1.2}
   .chip:hover{border-color:var(--accent-dim);color:var(--accent)}
   .pagegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:.55rem}
-  .pcell{padding:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel-2);
+  .pcell{position:relative;padding:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel-2);
     cursor:pointer;display:flex;flex-direction:column}
   .pcell:hover{border-color:var(--accent-dim)}
+  .pcell.iscover{border-color:var(--accent)}
   .pcell img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block;background:var(--panel-2)}
   .pnum{font-size:.72rem;color:var(--muted);text-align:center;padding:.2rem 0}
+  .setcover{position:absolute;top:0;left:0;right:0;border:0;background:rgba(0,0,0,.66);color:#fff;
+    font-size:.66rem;padding:.22rem 0;opacity:0;cursor:pointer}
+  .pcell:hover .setcover{opacity:1}
+  .setcover:hover{background:var(--accent-dim)}
+  .covbadge{position:absolute;top:4px;left:4px;background:var(--accent);color:#111;font-size:.58rem;
+    font-weight:700;padding:.05rem .3rem;border-radius:4px;letter-spacing:.03em}
 
   /* hover summary popover */
   .hovercard{position:fixed;z-index:30;width:260px;max-width:80vw;background:var(--panel);
@@ -169,6 +176,7 @@
       <button id="dClose">← Library</button>
       <div id="dTitle" class="rtitle"></div>
       <div class="spacer"></div>
+      <button id="dRefreshCover" title="Regenerate the cover from the current page">↻ Cover</button>
       <button id="dFav" class="toggle" aria-pressed="false" title="Favorite">♥</button>
       <button id="dRead">Read</button>
     </div>
@@ -358,7 +366,7 @@
   }
 
   // --- detail view ---
-  const detail = { id:null };
+  const detail = { id:null, coverPage:0 };
   async function openDetail(id){
     const r = await api('/api/archives/' + id);
     if(!r.ok){ location.hash = '#/'; return; }
@@ -371,10 +379,12 @@
     $('#dFav').setAttribute('aria-pressed', d.favorite ? 'true' : 'false');
     $('#dRead').textContent = d.lastPage > 0 ? ('Resume p.' + (d.lastPage + 1)) : 'Read';
     const cover = $('#dCover');
+    cover.onerror = () => { cover.style.display = 'none'; };
     if(d.hasCover){ cover.src = '/api/archives/' + id + '/cover'; cover.style.display = ''; }
     else { cover.removeAttribute('src'); cover.style.display = 'none'; }
+    detail.coverPage = (d.coverPage != null ? d.coverPage : 0);
     renderDetailTags(d.tags || {});
-    buildPageGrid(id, d.pageCount);
+    buildPageGrid(id, d.pageCount, detail.coverPage);
     $('#detail').classList.add('open');
     $('#detail').setAttribute('aria-hidden','false');
     $('.dbody').scrollTop = 0;
@@ -405,20 +415,52 @@
     loadList(true);
   }
 
-  function buildPageGrid(id, count){
+  function buildPageGrid(id, count, coverPage){
     const grid = $('#dPageGrid');
     grid.innerHTML = '';
     const frag = document.createDocumentFragment();
     for(let n = 0; n < count; n++){
-      const cell = el('button','pcell');
+      const page = n;
+      const cell = el('div','pcell');
+      if(n === coverPage){
+        cell.classList.add('iscover');
+        cell.appendChild(Object.assign(el('div','covbadge'), {textContent:'COVER'}));
+      }
+      const set = el('button','setcover');
+      set.textContent = 'set cover';
+      set.title = 'Use this page as the cover';
+      set.addEventListener('click', e => { e.stopPropagation(); setCover(id, page); });
       const img = el('img'); img.loading = 'lazy'; img.alt = ''; img.src = '/api/archives/' + id + '/thumb/' + n;
       const num = el('div','pnum'); num.textContent = (n + 1);
-      cell.appendChild(img); cell.appendChild(num);
-      const page = n;
+      cell.appendChild(set); cell.appendChild(img); cell.appendChild(num);
       cell.addEventListener('click', () => { location.hash = '#/read/' + id + '/' + page; });
       frag.appendChild(cell);
     }
     grid.appendChild(frag);
+  }
+
+  async function setCover(id, page){
+    const r = await api('/api/archives/' + id + '/cover',
+      { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ page }) });
+    if(!r.ok) return;
+    detail.coverPage = page;
+    markCoverCell(page);
+    bustCover(id);
+  }
+  function markCoverCell(page){
+    const cells = $('#dPageGrid').children;
+    for(let i = 0; i < cells.length; i++){
+      const isc = i === page;
+      cells[i].classList.toggle('iscover', isc);
+      const badge = cells[i].querySelector('.covbadge');
+      if(isc && !badge) cells[i].appendChild(Object.assign(el('div','covbadge'), {textContent:'COVER'}));
+      if(!isc && badge) badge.remove();
+    }
+  }
+  function bustCover(id){
+    const c = $('#dCover');
+    c.style.display = '';
+    c.src = '/api/archives/' + id + '/cover?t=' + Date.now(); // force the regenerated cover to show now
   }
 
   function hideDetail(){
@@ -541,6 +583,11 @@
   // detail controls
   $('#dClose').addEventListener('click', exitToLibrary);
   $('#dRead').addEventListener('click', () => { if(detail.id != null) location.hash = '#/read/' + detail.id; });
+  $('#dRefreshCover').addEventListener('click', async () => {
+    if(detail.id == null) return;
+    await api('/api/archives/' + detail.id + '/cover/refresh', { method:'POST' });
+    bustCover(detail.id);
+  });
   $('#dFav').addEventListener('click', async e => {
     if(detail.id == null) return;
     const on = e.currentTarget.getAttribute('aria-pressed') === 'true';

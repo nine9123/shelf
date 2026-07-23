@@ -9,10 +9,11 @@ import (
 )
 
 type job struct {
-	rel  string
-	abs  string
-	size int64
-	mt   int64
+	rel       string
+	abs       string
+	size      int64
+	mt        int64
+	coverPage int
 }
 
 type result struct {
@@ -55,7 +56,8 @@ func (a *App) process(j job) result {
 	r.meta = arc.Meta()
 	r.category, r.tags = parseInfo(r.meta)
 	if len(imgs) > 0 {
-		if rc, err := arc.Open(imgs[0]); err == nil {
+		cp := clampInt(j.coverPage, 0, len(imgs)-1)
+		if rc, err := arc.Open(imgs[cp]); err == nil {
 			if err := makeThumb(rc, a.cfg.ThumbWidth, a.coverPath(j.rel)); err == nil {
 				r.hasCover = true
 			}
@@ -138,11 +140,13 @@ func (a *App) Scan() {
 	}
 
 	// 3. anything new, changed, or not yet successfully indexed gets a job
+	overrides := a.coverOverrides() // identity -> chosen cover page (usually empty)
 	var todo []job
 	for rel, fe := range disk {
 		k, ok := known[rel]
 		if !ok || k.size != fe.size || k.mt != fe.mt || k.status != "indexed" {
-			todo = append(todo, job{rel: rel, abs: fe.abs, size: fe.size, mt: fe.mt})
+			todo = append(todo, job{rel: rel, abs: fe.abs, size: fe.size, mt: fe.mt,
+				coverPage: overrides[identityOf(rel)]})
 		}
 	}
 

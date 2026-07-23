@@ -96,6 +96,11 @@ CREATE TABLE IF NOT EXISTS read_progress (
     identity   TEXT PRIMARY KEY,
     last_page  INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cover_override (
+    identity   TEXT PRIMARY KEY,
+    page       INTEGER NOT NULL,   -- image index to use as the cover (0-based)
+    updated_at INTEGER NOT NULL
 );`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
