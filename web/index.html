@@ -590,9 +590,10 @@
   });
   $('#dFav').addEventListener('click', async e => {
     if(detail.id == null) return;
-    const on = e.currentTarget.getAttribute('aria-pressed') === 'true';
+    const btn = e.currentTarget; // capture before await — currentTarget is null afterwards
+    const on = btn.getAttribute('aria-pressed') === 'true';
     await api('/api/archives/' + detail.id + '/favorite', { method: on ? 'DELETE' : 'PUT' });
-    e.currentTarget.setAttribute('aria-pressed', on ? 'false' : 'true');
+    btn.setAttribute('aria-pressed', on ? 'false' : 'true');
   });
 
   // hover summary popover over library cards
@@ -711,9 +712,10 @@
   });
   $('#rDir').addEventListener('click', () => { reader.rtl = !reader.rtl; savePrefs(); syncReaderButtons(); });
   $('#rFav').addEventListener('click', async e => {
-    const on = e.currentTarget.getAttribute('aria-pressed') === 'true';
+    const btn = e.currentTarget; // capture before await — currentTarget is null afterwards
+    const on = btn.getAttribute('aria-pressed') === 'true';
     await api('/api/archives/' + reader.id + '/favorite', { method: on ? 'DELETE' : 'PUT' });
-    e.currentTarget.setAttribute('aria-pressed', on ? 'false' : 'true');
+    btn.setAttribute('aria-pressed', on ? 'false' : 'true');
   });
   document.addEventListener('keydown', e => {
     if($('#reader').classList.contains('open')){
