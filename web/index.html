@@ -49,12 +49,15 @@
   .rbar{display:flex;gap:.6rem;align-items:center;padding:.5rem .8rem;
     background:rgba(20,20,24,.94);border-bottom:1px solid var(--line);height:52px}
   .rtitle{font-size:.9rem;max-width:36vw;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-  .rstage{flex:1;overflow:auto;display:flex;justify-content:center;background:#0c0c0e}
+  .rstage{flex:1;overflow:auto;display:flex;justify-content:center;gap:2px;background:#0c0c0e}
   .rstage.fitH{align-items:center}
   .rstage.fitW{align-items:flex-start}
+  .rstage.rtl{flex-direction:row-reverse}          /* manga: first page on the right */
   .rstage img{display:block}
-  .rstage.fitH img{max-height:calc(100vh - 52px);width:auto}
+  .rstage.fitH img{max-height:calc(100vh - 52px);width:auto;max-width:100%}
   .rstage.fitW img{width:100%;height:auto}
+  .rstage.spread.fitH img{max-width:calc(50vw - 1px)} /* two pages share the width */
+  .rstage.spread.fitW img{width:calc(50% - 1px)}
   .pageind{min-width:8ch;text-align:center;color:var(--muted);font-size:.85rem}
   .navzone{position:fixed;top:52px;bottom:0;width:22%;z-index:21;cursor:pointer}
   .navzone.left{left:0}
@@ -85,11 +88,12 @@
       <button id="rFav" class="toggle" aria-pressed="false" title="Favorite">♥</button>
       <button id="rDir" class="toggle" aria-pressed="false" title="Reading direction">LTR</button>
       <button id="rFit" class="toggle" title="Fit">Fit height</button>
+      <button id="rSpread" class="toggle" aria-pressed="false" title="Page layout">1 page</button>
       <button id="rPrev">Prev</button>
       <div id="rInd" class="pageind"></div>
       <button id="rNext">Next</button>
     </div>
-    <div id="rStage" class="rstage fitH"><img id="rImg" alt=""></div>
+    <div id="rStage" class="rstage fitH"><img id="rImg" alt=""><img id="rImg2" alt="" hidden></div>
     <div class="navzone left" id="navL"></div>
     <div class="navzone right" id="navR"></div>
   </div>
@@ -99,7 +103,7 @@
   const api = (p, opt) => fetch(p, opt);
 
   const state = { q:'', fav:false };
-  const reader = { id:null, page:0, count:0, rtl:false, fitH:true };
+  const reader = { id:null, page:0, count:0, rtl:false, fitH:true, spread:false };
 
   async function loadList(){
     const params = new URLSearchParams();
@@ -161,6 +165,7 @@
     reader.page = Math.min(d.lastPage || 0, Math.max(0, d.pageCount - 1));
     $('#rTitle').textContent = d.title || '';
     $('#rFav').setAttribute('aria-pressed', d.favorite ? 'true' : 'false');
+    applyStageClasses();
     $('#reader').classList.add('open');
     $('#reader').setAttribute('aria-hidden','false');
     renderPage();
@@ -168,9 +173,22 @@
 
   function renderPage(){
     if(reader.id == null) return;
-    $('#rImg').src = '/api/archives/' + reader.id + '/page/' + reader.page;
-    $('#rInd').textContent = (reader.page + 1) + ' / ' + reader.count;
-    preload(reader.page + 1);
+    const base = '/api/archives/' + reader.id + '/page/';
+    const hasSecond = reader.spread && reader.page + 1 < reader.count;
+    $('#rImg').src = base + reader.page;
+    const second = $('#rImg2');
+    if(hasSecond){
+      second.src = base + (reader.page + 1);
+      second.hidden = false;
+    } else {
+      second.hidden = true;
+    }
+    $('#rInd').textContent = hasSecond
+      ? (reader.page + 1) + '–' + (reader.page + 2) + ' / ' + reader.count
+      : (reader.page + 1) + ' / ' + reader.count;
+    const step = reader.spread ? 2 : 1;
+    preload(reader.page + step);
+    if(reader.spread) preload(reader.page + step + 1);
     saveProgress();
   }
 
@@ -178,11 +196,16 @@
     if(n >= 0 && n < reader.count){ const i = new Image(); i.src = '/api/archives/' + reader.id + '/page/' + n; }
   }
 
-  function go(delta){
-    const p = reader.page + delta;
+  function go(dir){ // dir is -1 (back) or +1 (forward); a "step" is 1 or 2 pages
+    const p = reader.page + dir * (reader.spread ? 2 : 1);
     if(p < 0 || p >= reader.count) return;
     reader.page = p;
     renderPage();
+  }
+
+  function applyStageClasses(){
+    $('#rStage').className = 'rstage ' + (reader.fitH ? 'fitH' : 'fitW')
+      + (reader.spread ? ' spread' : '') + (reader.rtl ? ' rtl' : '');
   }
 
   let saveT;
@@ -199,6 +222,7 @@
     $('#reader').classList.remove('open');
     $('#reader').setAttribute('aria-hidden','true');
     $('#rImg').src = '';
+    $('#rImg2').hidden = true;
     reader.id = null;
   }
 
@@ -220,11 +244,20 @@
   $('#navR').addEventListener('click', () => go(reader.rtl ? -1 : 1));
   $('#rFit').addEventListener('click', e => {
     reader.fitH = !reader.fitH;
-    $('#rStage').className = 'rstage ' + (reader.fitH ? 'fitH' : 'fitW');
+    applyStageClasses();
     e.currentTarget.textContent = reader.fitH ? 'Fit height' : 'Fit width';
+  });
+  $('#rSpread').addEventListener('click', e => {
+    reader.spread = !reader.spread;
+    if(reader.spread) reader.page -= reader.page % 2; // align spreads to even pages
+    applyStageClasses();
+    e.currentTarget.setAttribute('aria-pressed', reader.spread ? 'true' : 'false');
+    e.currentTarget.textContent = reader.spread ? '2 pages' : '1 page';
+    renderPage();
   });
   $('#rDir').addEventListener('click', e => {
     reader.rtl = !reader.rtl;
+    applyStageClasses();
     e.currentTarget.setAttribute('aria-pressed', reader.rtl ? 'true' : 'false');
     e.currentTarget.textContent = reader.rtl ? 'RTL' : 'LTR';
   });

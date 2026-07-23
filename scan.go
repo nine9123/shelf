@@ -125,6 +125,15 @@ func (a *App) Scan() {
 		rows.Close()
 	}
 
+	// Safety guard: if the walk found nothing but the index is populated, the
+	// library mount has almost certainly gone missing. Bail out rather than
+	// prune every row and delete every cover (an expensive, pointless rebuild).
+	// user.db is untouched regardless, so favorites/progress are never at risk.
+	if len(disk) == 0 && len(known) > 0 {
+		log.Printf("scan: 0 archives on disk but %d indexed — library mount looks missing; skipping this scan", len(known))
+		return
+	}
+
 	// 3. anything new, changed, or not yet successfully indexed gets a job
 	var todo []job
 	for rel, fe := range disk {
@@ -162,6 +171,7 @@ func (a *App) writeResult(r result) {
 	status, errStr := "indexed", ""
 	if r.err != nil {
 		status, errStr = "error", r.err.Error()
+		log.Printf("scan: index %s: %v", r.rel, r.err)
 	}
 	_, err := a.index.Exec(`
 INSERT INTO archives (path, title, size, mtime, page_count, meta, has_cover, status, error, indexed_at)

@@ -41,6 +41,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/favorites", a.handleFavorites)
 	mux.HandleFunc("POST /api/scan", a.handleScan)
 	mux.HandleFunc("GET /api/status", a.handleStatus)
+	mux.HandleFunc("GET /api/errors", a.handleErrors)
 	mux.HandleFunc("GET /", a.handleIndex)
 	return mux
 }
@@ -263,6 +264,29 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"lastScan": a.lastScan.Load(),
 		"counts":   counts,
 	})
+}
+
+func (a *App) handleErrors(w http.ResponseWriter, r *http.Request) {
+	limit := clampInt(atoiDefault(r.URL.Query().Get("limit"), 100), 1, 1000)
+	rows, err := a.index.Query(
+		`SELECT path, error FROM archives WHERE status='error' ORDER BY path LIMIT ?`, limit)
+	if err != nil {
+		httpErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer rows.Close()
+	type errItem struct {
+		Path  string `json:"path"`
+		Error string `json:"error"`
+	}
+	items := []errItem{}
+	for rows.Next() {
+		var it errItem
+		if rows.Scan(&it.Path, &it.Error) == nil {
+			items = append(items, it)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
