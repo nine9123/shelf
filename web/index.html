@@ -72,6 +72,7 @@
     <div class="brand">Shelf<span>.</span></div>
     <input id="q" type="search" placeholder="Search title, notes, path…" autocomplete="off">
     <button id="favBtn" class="toggle" aria-pressed="false">Favorites</button>
+    <button id="dupBtn" class="toggle" title="Hide comics that share an ID">Hide dupes</button>
     <div class="spacer"></div>
     <div id="status" class="status"></div>
     <button id="scanBtn">Scan</button>
@@ -107,8 +108,20 @@
   const $ = s => document.querySelector(s);
   const api = (p, opt) => fetch(p, opt);
 
-  const state = { q:'', fav:false, offset:0, limit:60, loading:false, done:false };
-  const reader = { id:null, page:0, count:0, rtl:false, fitH:true, spread:false };
+  const PREFS_KEY = 'shelf.prefs';
+  function loadPrefs(){ try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch(_) { return {}; } }
+  const prefs = loadPrefs();
+  const def = (v, d) => v !== undefined ? v : d;
+
+  const state = { q:'', fav:false, hideDupes: def(prefs.hideDupes, true), offset:0, limit:60, loading:false, done:false };
+  const reader = { id:null, page:0, count:0,
+    rtl: def(prefs.rtl, true), fitH: def(prefs.fitH, true), spread: def(prefs.spread, true) };
+
+  function savePrefs(){
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify({
+      rtl: reader.rtl, spread: reader.spread, fitH: reader.fitH, hideDupes: state.hideDupes
+    })); } catch(_) {}
+  }
 
   let listSeq = 0;
   async function loadList(reset){
@@ -120,6 +133,7 @@
     const params = new URLSearchParams();
     if(state.q) params.set('q', state.q);
     if(state.fav) params.set('fav', '1');
+    if(state.hideDupes) params.set('hideDupes', '1');
     params.set('limit', state.limit);
     params.set('offset', state.offset);
     let items = [];
@@ -279,6 +293,15 @@
       + (reader.spread ? ' spread' : '') + (reader.rtl ? ' rtl' : '');
   }
 
+  function syncReaderButtons(){
+    $('#rDir').setAttribute('aria-pressed', reader.rtl ? 'true' : 'false');
+    $('#rDir').textContent = reader.rtl ? 'RTL' : 'LTR';
+    $('#rSpread').setAttribute('aria-pressed', reader.spread ? 'true' : 'false');
+    $('#rSpread').textContent = reader.spread ? '2 pages' : '1 page';
+    $('#rFit').textContent = reader.fitH ? 'Fit height' : 'Fit width';
+    applyStageClasses();
+  }
+
   let saveT;
   function saveProgress(){
     clearTimeout(saveT);
@@ -302,33 +325,28 @@
     e.currentTarget.setAttribute('aria-pressed', state.fav ? 'true' : 'false');
     loadList(true);
   });
+  $('#dupBtn').addEventListener('click', e => {
+    state.hideDupes = !state.hideDupes;
+    e.currentTarget.setAttribute('aria-pressed', state.hideDupes ? 'true' : 'false');
+    savePrefs();
+    loadList(true);
+  });
   $('#rClose').addEventListener('click', exitToLibrary);
-  $('#rFirst').addEventListener('click', goFirst);
-  $('#rLast').addEventListener('click', goLast);
+  $('#rFirst').addEventListener('click', () => reader.rtl ? goLast() : goFirst());
+  $('#rLast').addEventListener('click', () => reader.rtl ? goFirst() : goLast());
   $('#rLeft').addEventListener('click', () => go(reader.rtl ? 1 : -1));
   $('#rRight').addEventListener('click', () => go(reader.rtl ? -1 : 1));
   $('#navL').addEventListener('click', () => go(reader.rtl ? 1 : -1));
   $('#navR').addEventListener('click', () => go(reader.rtl ? -1 : 1));
-  $('#rFit').addEventListener('click', e => {
-    reader.fitH = !reader.fitH;
-    applyStageClasses();
-    e.currentTarget.textContent = reader.fitH ? 'Fit height' : 'Fit width';
-  });
-  $('#rSpread').addEventListener('click', e => {
+  $('#rFit').addEventListener('click', () => { reader.fitH = !reader.fitH; savePrefs(); syncReaderButtons(); });
+  $('#rSpread').addEventListener('click', () => {
     reader.spread = !reader.spread;
     if(reader.spread) reader.page -= reader.page % 2; // align spreads to even pages
-    applyStageClasses();
-    e.currentTarget.setAttribute('aria-pressed', reader.spread ? 'true' : 'false');
-    e.currentTarget.textContent = reader.spread ? '2 pages' : '1 page';
+    savePrefs(); syncReaderButtons();
     renderPage();
     if(reader.id != null) history.replaceState(null, '', '#/read/' + reader.id + '/' + reader.page);
   });
-  $('#rDir').addEventListener('click', e => {
-    reader.rtl = !reader.rtl;
-    applyStageClasses();
-    e.currentTarget.setAttribute('aria-pressed', reader.rtl ? 'true' : 'false');
-    e.currentTarget.textContent = reader.rtl ? 'RTL' : 'LTR';
-  });
+  $('#rDir').addEventListener('click', () => { reader.rtl = !reader.rtl; savePrefs(); syncReaderButtons(); });
   $('#rFav').addEventListener('click', async e => {
     const on = e.currentTarget.getAttribute('aria-pressed') === 'true';
     await api('/api/archives/' + reader.id + '/favorite', { method: on ? 'DELETE' : 'PUT' });
@@ -372,6 +390,9 @@
   }
 
   function el(tag, cls){ const e = document.createElement(tag); if(cls) e.className = cls; return e; }
+
+  $('#dupBtn').setAttribute('aria-pressed', state.hideDupes ? 'true' : 'false');
+  syncReaderButtons();
 
   const io = new IntersectionObserver(
     es => { if(es.some(e => e.isIntersecting)) loadList(false); },

@@ -60,6 +60,11 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 	var sb strings.Builder
 	var args []any
 	sb.WriteString(`SELECT id, path, identity, title, page_count, has_cover FROM archives WHERE status='indexed'`)
+	if r.URL.Query().Get("hideDupes") == "1" {
+		// Collapse duplicate IDs to a single representative (the lowest row id),
+		// so a mistakenly-shared ID shows once instead of cluttering the grid.
+		sb.WriteString(` AND id IN (SELECT MIN(id) FROM archives WHERE status='indexed' GROUP BY identity)`)
+	}
 	if q != "" {
 		sb.WriteString(` AND (title LIKE ? OR meta LIKE ? OR path LIKE ?)`)
 		like := "%" + q + "%"
