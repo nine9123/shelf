@@ -17,11 +17,13 @@ func pathKey(rel string) string {
 
 // identityOf returns the durable identity of an archive from its relative path.
 //
-// If the filename begins with digits followed by a space (e.g. "0042 Foo.zip"),
-// the numeric value of those digits is the identity — returned as "#42". Parsing
-// as an integer means padding is irrelevant ("007" and "7" are the same ID).
-// This identity survives moves, renames of the descriptive part, and even
-// re-encoding the file, because it lives in the name, not the bytes.
+// If the filename begins with an integer followed by a space (e.g. "0042 Foo.zip"
+// or "-7 Foo.zip"), that integer is the identity — returned as "#42" / "#-7".
+// A leading "-" is allowed so hand-assigned IDs can live in the negatives and
+// never collide with a source that hands out positive IDs. Parsing as an integer
+// means padding is irrelevant ("007" and "7" match). This identity survives
+// moves, renames of the descriptive part, and even re-encoding, because it lives
+// in the name, not the bytes.
 //
 // Files that don't follow the convention fall back to "@"+path, which is stable
 // only until the file is moved or renamed. The "#"/"@" prefixes keep the two
@@ -29,12 +31,16 @@ func pathKey(rel string) string {
 func identityOf(rel string) string {
 	base := path.Base(rel)
 	i := 0
+	if i < len(base) && base[i] == '-' {
+		i++ // optional leading sign
+	}
+	start := i
 	for i < len(base) && base[i] >= '0' && base[i] <= '9' {
 		i++
 	}
-	if i > 0 && i < len(base) && base[i] == ' ' {
-		if n, err := strconv.ParseUint(base[:i], 10, 64); err == nil {
-			return "#" + strconv.FormatUint(n, 10)
+	if i > start && i < len(base) && base[i] == ' ' {
+		if n, err := strconv.ParseInt(base[:i], 10, 64); err == nil {
+			return "#" + strconv.FormatInt(n, 10)
 		}
 	}
 	return "@" + rel
