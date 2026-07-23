@@ -14,7 +14,9 @@ func openIndexDB(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	schema := `
+	// 1. Base tables. Fresh databases get every column; older ones are left as
+	//    they are here and patched by the column migrations below.
+	base := `
 CREATE TABLE IF NOT EXISTS archives (
     id          INTEGER PRIMARY KEY,
     path        TEXT UNIQUE NOT NULL,          -- relative to root; where the file currently is
@@ -30,34 +32,39 @@ CREATE TABLE IF NOT EXISTS archives (
     error       TEXT NOT NULL DEFAULT '',
     indexed_at  INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_archives_status   ON archives(status);
-CREATE INDEX IF NOT EXISTS idx_archives_title    ON archives(title);
-CREATE INDEX IF NOT EXISTS idx_archives_identity ON archives(identity);
-CREATE INDEX IF NOT EXISTS idx_archives_category ON archives(category);
-
--- Tags parsed from info.txt, one row per (archive, namespace, tag). Disposable
--- cache like everything here; rebuilt from the archives on scan.
 CREATE TABLE IF NOT EXISTS tags (
     archive_id INTEGER NOT NULL,
     namespace  TEXT NOT NULL,
     tag        TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_tags_lookup  ON tags(namespace, tag);
-CREATE INDEX IF NOT EXISTS idx_tags_archive ON tags(archive_id);`
-	if _, err := db.Exec(schema); err != nil {
+);`
+	if _, err := db.Exec(base); err != nil {
 		db.Close()
 		return nil, err
 	}
-	// Migrate a pre-identity cache: adding the column succeeds only when it was
-	// missing, in which case we re-index (cheap, it's a cache) to backfill IDs.
-	if _, err := db.Exec(`ALTER TABLE archives ADD COLUMN identity TEXT NOT NULL DEFAULT ''`); err == nil {
-		db.Exec(`UPDATE archives SET status='pending' WHERE status='indexed'`)
-		log.Printf("index.db: added identity column; will re-index to backfill on next scan")
+	// 2. Add columns that older caches may lack. ALTER errors harmlessly when the
+	//    column already exists; when it actually adds one, re-index to backfill.
+	//    (Indexes on these columns come afterwards, so they never reference a
+	//    column that doesn't exist yet.)
+	for _, m := range []struct{ name, ddl string }{
+		{"identity", `ALTER TABLE archives ADD COLUMN identity TEXT NOT NULL DEFAULT ''`},
+		{"category", `ALTER TABLE archives ADD COLUMN category TEXT NOT NULL DEFAULT ''`},
+	} {
+		if _, err := db.Exec(m.ddl); err == nil {
+			db.Exec(`UPDATE archives SET status='pending' WHERE status='indexed'`)
+			log.Printf("index.db: added %s column; will re-index to backfill on next scan", m.name)
+		}
 	}
-	// Same for a pre-category cache: backfill category + tags by re-indexing.
-	if _, err := db.Exec(`ALTER TABLE archives ADD COLUMN category TEXT NOT NULL DEFAULT ''`); err == nil {
-		db.Exec(`UPDATE archives SET status='pending' WHERE status='indexed'`)
-		log.Printf("index.db: added category column; will re-index to backfill category and tags")
+	// 3. Indexes last, once every column they reference is guaranteed to exist.
+	idx := `
+CREATE INDEX IF NOT EXISTS idx_archives_status   ON archives(status);
+CREATE INDEX IF NOT EXISTS idx_archives_title    ON archives(title);
+CREATE INDEX IF NOT EXISTS idx_archives_identity ON archives(identity);
+CREATE INDEX IF NOT EXISTS idx_archives_category ON archives(category);
+CREATE INDEX IF NOT EXISTS idx_tags_lookup       ON tags(namespace, tag);
+CREATE INDEX IF NOT EXISTS idx_tags_archive      ON tags(archive_id);`
+	if _, err := db.Exec(idx); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return db, nil
 }
