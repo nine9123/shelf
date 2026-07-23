@@ -268,7 +268,7 @@
       const cover = el('div','cover');
       if(it.hasCover){
         const img = el('img'); img.loading='lazy';
-        img.src = '/api/archives/' + it.id + '/cover'; img.alt = it.title || '';
+        img.src = '/api/archives/' + it.id + '/cover?v=' + it.coverVer; img.alt = it.title || '';
         cover.appendChild(img);
       } else {
         cover.appendChild(Object.assign(el('div','ph'), {textContent:'no cover'}));
@@ -380,7 +380,7 @@
     $('#dRead').textContent = d.lastPage > 0 ? ('Resume p.' + (d.lastPage + 1)) : 'Read';
     const cover = $('#dCover');
     cover.onerror = () => { cover.style.display = 'none'; };
-    if(d.hasCover){ cover.src = '/api/archives/' + id + '/cover'; cover.style.display = ''; }
+    if(d.hasCover){ cover.src = '/api/archives/' + id + '/cover?v=' + d.coverVer; cover.style.display = ''; }
     else { cover.removeAttribute('src'); cover.style.display = 'none'; }
     detail.coverPage = (d.coverPage != null ? d.coverPage : 0);
     renderDetailTags(d.tags || {});

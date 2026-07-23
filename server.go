@@ -28,6 +28,7 @@ type archiveItem struct {
 	Title     string `json:"title"`
 	PageCount int    `json:"pageCount"`
 	Category  string `json:"category"`
+	CoverVer  int64  `json:"coverVer"` // changes when the cover is (re)generated; for cache-busting
 	HasCover  bool   `json:"hasCover"`
 	Favorite  bool   `json:"favorite"`
 }
@@ -67,7 +68,7 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 
 	var sb strings.Builder
 	var args []any
-	sb.WriteString(`SELECT id, path, identity, title, page_count, has_cover, category FROM archives WHERE status='indexed'`)
+	sb.WriteString(`SELECT id, path, identity, title, page_count, has_cover, category, indexed_at FROM archives WHERE status='indexed'`)
 	if r.URL.Query().Get("hideDupes") == "1" {
 		// Collapse duplicate IDs to a single representative (the lowest row id),
 		// so a mistakenly-shared ID shows once instead of cluttering the grid.
@@ -111,7 +112,7 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 		var it archiveItem
 		var identity string
 		var hc int
-		if err := rows.Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &it.Category); err != nil {
+		if err := rows.Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &it.Category, &it.CoverVer); err != nil {
 			continue
 		}
 		it.HasCover = hc == 1
@@ -125,9 +126,10 @@ func (a *App) handleDetail(w http.ResponseWriter, r *http.Request) {
 	var it archiveItem
 	var hc int
 	var meta, identity, category string
+	var coverVer int64
 	err := a.index.QueryRow(
-		`SELECT id, path, identity, title, page_count, has_cover, meta, category FROM archives WHERE id=? AND status='indexed'`,
-		r.PathValue("id")).Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &meta, &category)
+		`SELECT id, path, identity, title, page_count, has_cover, meta, category, indexed_at FROM archives WHERE id=? AND status='indexed'`,
+		r.PathValue("id")).Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &meta, &category, &coverVer)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -151,7 +153,7 @@ func (a *App) handleDetail(w http.ResponseWriter, r *http.Request) {
 		"favorite": a.isFavorite(identity), "meta": meta,
 		"lastPage": a.readProgress(identity),
 		"category": category, "tags": tags,
-		"coverPage": coverPage, "coverOverridden": coverOverridden,
+		"coverPage": coverPage, "coverOverridden": coverOverridden, "coverVer": coverVer,
 	})
 }
 
@@ -210,10 +212,10 @@ func (a *App) handleCover(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// Strong ETag from the cover file's mtime+size, revalidated each request, so a
-	// regenerated cover busts the browser cache everywhere (cheap 304 when unchanged).
+	// URL is versioned (?v=coverVer), so cache hard; a changed cover is a new URL.
+	// ETag is a backstop for revalidation after expiry.
 	w.Header().Set("ETag", fmt.Sprintf(`"c%x-%x"`, info.ModTime().UnixNano(), info.Size()))
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
 	http.ServeFile(w, r, f)
 }
 
@@ -242,7 +244,7 @@ func (a *App) regenCover(id string, page int) bool {
 	if !has {
 		os.Remove(a.coverPath(relPath))
 	}
-	a.index.Exec(`UPDATE archives SET has_cover=? WHERE id=?`, b2i(has), id)
+	a.index.Exec(`UPDATE archives SET has_cover=?, indexed_at=? WHERE id=?`, b2i(has), time.Now().Unix(), id)
 	return has
 }
 
