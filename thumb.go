@@ -7,6 +7,9 @@ import (
 	_ "image/png"
 	"io"
 	"os"
+
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/webp"
 )
 
 // makeThumb decodes an image, scales it to width w (preserving aspect ratio,

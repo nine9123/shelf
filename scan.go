@@ -164,6 +164,13 @@ func (a *App) Scan() {
 	}
 
 	a.lastScan.Store(time.Now().Unix())
+
+	var dups int
+	a.index.QueryRow(`SELECT COUNT(*) FROM (
+		SELECT identity FROM archives WHERE identity LIKE '#%' GROUP BY identity HAVING COUNT(*) > 1)`).Scan(&dups)
+	if dups > 0 {
+		log.Printf("scan: %d duplicate IDs detected — favorites on those are ambiguous; see /api/id-report", dups)
+	}
 	log.Printf("scan: done in %s", time.Since(start).Round(time.Millisecond))
 }
 
@@ -174,13 +181,13 @@ func (a *App) writeResult(r result) {
 		log.Printf("scan: index %s: %v", r.rel, r.err)
 	}
 	_, err := a.index.Exec(`
-INSERT INTO archives (path, title, size, mtime, page_count, meta, has_cover, status, error, indexed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO archives (path, identity, title, size, mtime, page_count, meta, has_cover, status, error, indexed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(path) DO UPDATE SET
-    title=excluded.title, size=excluded.size, mtime=excluded.mtime,
+    identity=excluded.identity, title=excluded.title, size=excluded.size, mtime=excluded.mtime,
     page_count=excluded.page_count, meta=excluded.meta, has_cover=excluded.has_cover,
     status=excluded.status, error=excluded.error, indexed_at=excluded.indexed_at`,
-		r.rel, r.title, r.size, r.mt, r.pageCount, r.meta, b2i(r.hasCover), status, errStr, time.Now().Unix())
+		r.rel, identityOf(r.rel), r.title, r.size, r.mt, r.pageCount, r.meta, b2i(r.hasCover), status, errStr, time.Now().Unix())
 	if err != nil {
 		log.Printf("scan: write %s: %v", r.rel, err)
 	}

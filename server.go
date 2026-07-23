@@ -42,6 +42,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/scan", a.handleScan)
 	mux.HandleFunc("GET /api/status", a.handleStatus)
 	mux.HandleFunc("GET /api/errors", a.handleErrors)
+	mux.HandleFunc("GET /api/id-report", a.handleIDReport)
 	mux.HandleFunc("GET /", a.handleIndex)
 	return mux
 }
@@ -54,25 +55,25 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	favSet := a.favoriteSet()
+	favSet := a.favoriteIDSet()
 
 	var sb strings.Builder
 	var args []any
-	sb.WriteString(`SELECT id, path, title, page_count, has_cover FROM archives WHERE status='indexed'`)
+	sb.WriteString(`SELECT id, path, identity, title, page_count, has_cover FROM archives WHERE status='indexed'`)
 	if q != "" {
 		sb.WriteString(` AND (title LIKE ? OR meta LIKE ? OR path LIKE ?)`)
 		like := "%" + q + "%"
 		args = append(args, like, like, like)
 	}
 	if favOnly {
-		paths := a.favoritePaths()
-		if len(paths) == 0 {
+		idents := a.favoriteIdentities()
+		if len(idents) == 0 {
 			writeJSON(w, http.StatusOK, map[string]any{"items": []archiveItem{}, "limit": limit, "offset": offset})
 			return
 		}
-		sb.WriteString(` AND path IN (` + placeholders(len(paths)) + `)`)
-		for _, p := range paths {
-			args = append(args, p)
+		sb.WriteString(` AND identity IN (` + placeholders(len(idents)) + `)`)
+		for _, id := range idents {
+			args = append(args, id)
 		}
 	}
 	sb.WriteString(` ORDER BY title COLLATE NOCASE LIMIT ? OFFSET ?`)
@@ -87,12 +88,13 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 	items := []archiveItem{}
 	for rows.Next() {
 		var it archiveItem
+		var identity string
 		var hc int
-		if err := rows.Scan(&it.ID, &it.Path, &it.Title, &it.PageCount, &hc); err != nil {
+		if err := rows.Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc); err != nil {
 			continue
 		}
 		it.HasCover = hc == 1
-		it.Favorite = favSet[it.Path]
+		it.Favorite = favSet[identity]
 		items = append(items, it)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "limit": limit, "offset": offset})
@@ -101,10 +103,10 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleDetail(w http.ResponseWriter, r *http.Request) {
 	var it archiveItem
 	var hc int
-	var meta string
+	var meta, identity string
 	err := a.index.QueryRow(
-		`SELECT id, path, title, page_count, has_cover, meta FROM archives WHERE id=? AND status='indexed'`,
-		r.PathValue("id")).Scan(&it.ID, &it.Path, &it.Title, &it.PageCount, &hc, &meta)
+		`SELECT id, path, identity, title, page_count, has_cover, meta FROM archives WHERE id=? AND status='indexed'`,
+		r.PathValue("id")).Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &meta)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -112,8 +114,8 @@ func (a *App) handleDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": it.ID, "path": it.Path, "title": it.Title,
 		"pageCount": it.PageCount, "hasCover": hc == 1,
-		"favorite": a.isFavorite(it.Path), "meta": meta,
-		"lastPage": a.readProgress(it.Path),
+		"favorite": a.isFavorite(identity), "meta": meta,
+		"lastPage": a.readProgress(identity),
 	})
 }
 
@@ -173,14 +175,14 @@ func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleFavAdd(w http.ResponseWriter, r *http.Request) {
-	relPath, _, ok := a.lookup(r.PathValue("id"))
+	identity, ok := a.identityForID(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	if _, err := a.user.Exec(
-		`INSERT OR IGNORE INTO favorites(archive_path, created_at) VALUES(?, ?)`,
-		relPath, time.Now().Unix()); err != nil {
+		`INSERT OR IGNORE INTO favorites(identity, created_at) VALUES(?, ?)`,
+		identity, time.Now().Unix()); err != nil {
 		httpErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -188,25 +190,27 @@ func (a *App) handleFavAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleFavDel(w http.ResponseWriter, r *http.Request) {
-	relPath, _, ok := a.lookup(r.PathValue("id"))
+	identity, ok := a.identityForID(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	a.user.Exec(`DELETE FROM favorites WHERE archive_path=?`, relPath)
+	a.user.Exec(`DELETE FROM favorites WHERE identity=?`, identity)
 	writeJSON(w, http.StatusOK, map[string]any{"favorite": false})
 }
 
 func (a *App) handleFavorites(w http.ResponseWriter, r *http.Request) {
 	items := []archiveItem{}
-	for _, p := range a.favoritePaths() {
+	for _, ident := range a.favoriteIdentities() {
 		var it archiveItem
 		var hc int
+		// A favorited identity may map to more than one path only if IDs clash;
+		// pick the first indexed match for display.
 		err := a.index.QueryRow(
-			`SELECT id, path, title, page_count, has_cover FROM archives WHERE path=? AND status='indexed'`,
-			p).Scan(&it.ID, &it.Path, &it.Title, &it.PageCount, &hc)
+			`SELECT id, path, title, page_count, has_cover FROM archives WHERE identity=? AND status='indexed' ORDER BY path LIMIT 1`,
+			ident).Scan(&it.ID, &it.Path, &it.Title, &it.PageCount, &hc)
 		if err != nil {
-			continue // favorited but not currently indexed (e.g. file moved away)
+			continue // favorited but not currently indexed (e.g. file removed)
 		}
 		it.HasCover = hc == 1
 		it.Favorite = true
@@ -216,7 +220,7 @@ func (a *App) handleFavorites(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleProgress(w http.ResponseWriter, r *http.Request) {
-	relPath, _, ok := a.lookup(r.PathValue("id"))
+	identity, ok := a.identityForID(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -229,9 +233,9 @@ func (a *App) handleProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := a.user.Exec(`
-INSERT INTO read_progress(archive_path, last_page, updated_at) VALUES(?, ?, ?)
-ON CONFLICT(archive_path) DO UPDATE SET last_page=excluded.last_page, updated_at=excluded.updated_at`,
-		relPath, body.Page, time.Now().Unix()); err != nil {
+INSERT INTO read_progress(identity, last_page, updated_at) VALUES(?, ?, ?)
+ON CONFLICT(identity) DO UPDATE SET last_page=excluded.last_page, updated_at=excluded.updated_at`,
+		identity, body.Page, time.Now().Unix()); err != nil {
 		httpErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -289,6 +293,48 @@ func (a *App) handleErrors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (a *App) handleIDReport(w http.ResponseWriter, r *http.Request) {
+	// Numeric IDs claimed by more than one indexed archive (ambiguous favorites).
+	dupMap := map[string][]string{}
+	if rows, err := a.index.Query(`
+SELECT identity, path FROM archives
+WHERE status='indexed' AND identity IN (
+    SELECT identity FROM archives WHERE status='indexed' AND identity LIKE '#%'
+    GROUP BY identity HAVING COUNT(*) > 1)
+ORDER BY identity, path`); err == nil {
+		for rows.Next() {
+			var id, p string
+			if rows.Scan(&id, &p) == nil {
+				dupMap[id] = append(dupMap[id], p)
+			}
+		}
+		rows.Close()
+	}
+	duplicates := []map[string]any{}
+	for id, paths := range dupMap {
+		duplicates = append(duplicates, map[string]any{"id": id, "paths": paths})
+	}
+
+	// Archives with no leading "<digits> " ID — these fall back to path identity
+	// and won't survive a move until you give them an ID.
+	missing := []string{}
+	if rows, err := a.index.Query(
+		`SELECT path FROM archives WHERE status='indexed' AND identity LIKE '@%' ORDER BY path`); err == nil {
+		for rows.Next() {
+			var p string
+			if rows.Scan(&p) == nil {
+				missing = append(missing, p)
+			}
+		}
+		rows.Close()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"duplicates": duplicates, "duplicateCount": len(duplicates),
+		"missing": missing, "missingCount": len(missing),
+	})
+}
+
 func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -314,38 +360,48 @@ func (a *App) lookup(id string) (relPath string, mtime int64, ok bool) {
 	return relPath, mtime, true
 }
 
-func (a *App) favoritePaths() []string {
-	rows, err := a.user.Query(`SELECT archive_path FROM favorites ORDER BY created_at DESC`)
+func (a *App) favoriteIdentities() []string {
+	rows, err := a.user.Query(`SELECT identity FROM favorites ORDER BY created_at DESC`)
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
-		var p string
-		if rows.Scan(&p) == nil {
-			out = append(out, p)
+		var id string
+		if rows.Scan(&id) == nil {
+			out = append(out, id)
 		}
 	}
 	return out
 }
 
-func (a *App) favoriteSet() map[string]bool {
+func (a *App) favoriteIDSet() map[string]bool {
 	m := map[string]bool{}
-	for _, p := range a.favoritePaths() {
-		m[p] = true
+	for _, id := range a.favoriteIdentities() {
+		m[id] = true
 	}
 	return m
 }
 
-func (a *App) isFavorite(relPath string) bool {
-	var one int
-	return a.user.QueryRow(`SELECT 1 FROM favorites WHERE archive_path=?`, relPath).Scan(&one) == nil
+// identityForID resolves an archive's numeric row id to its durable identity.
+func (a *App) identityForID(id string) (string, bool) {
+	var identity string
+	if a.index.QueryRow(`SELECT identity FROM archives WHERE id=? AND status='indexed'`, id).
+		Scan(&identity) != nil {
+		return "", false
+	}
+	return identity, true
 }
 
-func (a *App) readProgress(relPath string) int {
+func (a *App) isFavorite(identity string) bool {
+	var one int
+	return a.user.QueryRow(`SELECT 1 FROM favorites WHERE identity=?`, identity).Scan(&one) == nil
+}
+
+func (a *App) readProgress(identity string) int {
 	var p int
-	if a.user.QueryRow(`SELECT last_page FROM read_progress WHERE archive_path=?`, relPath).Scan(&p) != nil {
+	if a.user.QueryRow(`SELECT last_page FROM read_progress WHERE identity=?`, identity).Scan(&p) != nil {
 		return 0
 	}
 	return p

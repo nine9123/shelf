@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"path"
+	"strconv"
 )
 
 // pathKey returns a stable, filesystem-safe key for a relative archive path.
@@ -11,6 +13,31 @@ import (
 func pathKey(rel string) string {
 	sum := sha1.Sum([]byte(rel))
 	return hex.EncodeToString(sum[:])
+}
+
+// identityOf returns the durable identity of an archive from its relative path.
+//
+// If the filename begins with digits followed by a space (e.g. "0042 Foo.zip"),
+// the numeric value of those digits is the identity — returned as "#42". Parsing
+// as an integer means padding is irrelevant ("007" and "7" are the same ID).
+// This identity survives moves, renames of the descriptive part, and even
+// re-encoding the file, because it lives in the name, not the bytes.
+//
+// Files that don't follow the convention fall back to "@"+path, which is stable
+// only until the file is moved or renamed. The "#"/"@" prefixes keep the two
+// kinds from ever colliding and make the identity easy to read.
+func identityOf(rel string) string {
+	base := path.Base(rel)
+	i := 0
+	for i < len(base) && base[i] >= '0' && base[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(base) && base[i] == ' ' {
+		if n, err := strconv.ParseUint(base[:i], 10, 64); err == nil {
+			return "#" + strconv.FormatUint(n, 10)
+		}
+	}
+	return "@" + rel
 }
 
 // naturalLess compares two strings so that embedded numbers sort by value:
