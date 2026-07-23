@@ -111,6 +111,7 @@ ROOT_DIR=/path/to/archives CACHE_DIR=/tmp/shelf-cache go run .
 | GET | `/api/archives/{id}` | Detail (metadata, category, grouped tags, favorite, `lastPage`) |
 | GET | `/api/archives/{id}/cover` | Cover thumbnail (JPEG) |
 | GET | `/api/archives/{id}/page/{n}` | Stream page image `n` (ETag-cached) |
+| GET | `/api/archives/{id}/thumb/{n}` | Small JPEG thumbnail of page `n` (for the detail grid) |
 | PUT / DELETE | `/api/archives/{id}/favorite` | Toggle favorite |
 | PUT | `/api/archives/{id}/progress` | Save `{ "page": n }` |
 | GET | `/api/favorites` | Favorited archives |

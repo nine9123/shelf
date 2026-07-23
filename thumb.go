@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	_ "image/gif"
 	"image/jpeg"
@@ -13,24 +14,28 @@ import (
 )
 
 // makeThumb decodes an image, scales it to width w (preserving aspect ratio,
-// never upscaling), and writes JPEG to dst.
+// never upscaling), and writes JPEG to dst. The file is written only on success,
+// so a decode failure never leaves an empty cover behind.
 //
 // This uses a hand-rolled bilinear filter so the build stays pure stdlib with
 // no cgo image libraries. It is fine for a first pass; for a full 2 TB library
 // swap this for libvips (govips) — see the README — which is far faster and can
 // emit WebP.
 func makeThumb(r io.Reader, w int, dst string) error {
+	var buf bytes.Buffer
+	if err := makeThumbTo(r, w, &buf); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, buf.Bytes(), 0o644)
+}
+
+// makeThumbTo decodes, scales to width w, and writes JPEG to out.
+func makeThumbTo(r io.Reader, w int, out io.Writer) error {
 	src, _, err := image.Decode(r)
 	if err != nil {
 		return err
 	}
-	out := scaleWidth(src, w)
-	f, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return jpeg.Encode(f, out, &jpeg.Options{Quality: 82})
+	return jpeg.Encode(out, scaleWidth(src, w), &jpeg.Options{Quality: 80})
 }
 
 func scaleWidth(src image.Image, targetW int) image.Image {
