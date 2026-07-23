@@ -42,6 +42,7 @@
   .title{font-size:.85rem;line-height:1.3;max-height:2.6em;overflow:hidden}
   .sub{color:var(--muted);font-size:.72rem;margin-top:.2rem}
   .empty{color:var(--muted);text-align:center;padding:4rem 1rem}
+  .sentinel{color:var(--muted);text-align:center;padding:1.4rem;min-height:1px;font-size:.85rem}
 
   /* reader */
   .reader{position:fixed;inset:0;z-index:20;background:#0c0c0e;display:none;flex-direction:column}
@@ -78,6 +79,7 @@
 
   <main>
     <div id="grid" class="grid"></div>
+    <div id="sentinel" class="sentinel"></div>
     <div id="empty" class="empty" hidden></div>
   </main>
 
@@ -105,28 +107,53 @@
   const $ = s => document.querySelector(s);
   const api = (p, opt) => fetch(p, opt);
 
-  const state = { q:'', fav:false };
+  const state = { q:'', fav:false, offset:0, limit:60, loading:false, done:false };
   const reader = { id:null, page:0, count:0, rtl:false, fitH:true, spread:false };
 
-  async function loadList(){
+  let listSeq = 0;
+  async function loadList(reset){
+    if(!reset && (state.loading || state.done)) return;
+    if(reset){ state.offset = 0; state.done = false; $('#grid').innerHTML = ''; }
+    const mySeq = ++listSeq;
+    state.loading = true;
+    $('#sentinel').textContent = 'Loading…';
     const params = new URLSearchParams();
     if(state.q) params.set('q', state.q);
-    if(state.fav) params.set('fav','1');
-    const data = await (await api('/api/archives?' + params.toString())).json();
-    renderGrid(data.items || []);
-  }
+    if(state.fav) params.set('fav', '1');
+    params.set('limit', state.limit);
+    params.set('offset', state.offset);
+    let items = [];
+    try {
+      const data = await (await api('/api/archives?' + params.toString())).json();
+      items = data.items || [];
+    } catch(_) {}
+    if(mySeq !== listSeq) return; // a newer (re)load superseded this one
+    appendItems(items);
+    state.offset += items.length;
+    if(items.length < state.limit) state.done = true;
 
-  function renderGrid(items){
-    const grid = $('#grid'), empty = $('#empty');
-    grid.innerHTML = '';
-    if(items.length === 0){
+    const empty = $('#empty');
+    if(state.offset === 0 && items.length === 0){
       empty.hidden = false;
       empty.textContent = state.fav
         ? 'No favorites yet. Tap ♥ on a cover to save one.'
         : (state.q ? 'Nothing matches your search.' : 'Nothing indexed yet. Add archives and press Scan.');
-      return;
+    } else {
+      empty.hidden = true;
     }
-    empty.hidden = true;
+    $('#sentinel').textContent = '';
+    state.loading = false;
+    // keep loading until the viewport is filled (short results or a tall screen)
+    if(!state.done && sentinelVisible()) loadList(false);
+  }
+
+  function sentinelVisible(){
+    const r = $('#sentinel').getBoundingClientRect();
+    return r.top < window.innerHeight + 600;
+  }
+
+  function appendItems(items){
+    const grid = $('#grid');
     for(const it of items){
       const card = el('div','card');
       const cover = el('div','cover');
@@ -145,7 +172,7 @@
         await api('/api/archives/' + it.id + '/favorite', { method: on ? 'DELETE' : 'PUT' });
         it.favorite = !on;
         fav.setAttribute('aria-pressed', it.favorite ? 'true' : 'false');
-        if(state.fav && !it.favorite) loadList();
+        if(state.fav && !it.favorite) card.remove(); // drop it from the favorites view
       });
       cover.appendChild(fav);
       cover.addEventListener('click', () => { location.hash = '#/read/' + it.id; });
@@ -268,12 +295,12 @@
   $('#q').addEventListener('input', e => {
     state.q = e.target.value.trim();
     clearTimeout(window._qt);
-    window._qt = setTimeout(loadList, 220);
+    window._qt = setTimeout(() => loadList(true), 220);
   });
   $('#favBtn').addEventListener('click', e => {
     state.fav = !state.fav;
     e.currentTarget.setAttribute('aria-pressed', state.fav ? 'true' : 'false');
-    loadList();
+    loadList(true);
   });
   $('#rClose').addEventListener('click', exitToLibrary);
   $('#rFirst').addEventListener('click', goFirst);
@@ -333,21 +360,27 @@
         : (indexed + ' indexed' + (c.error ? (' · ' + c.error + ' errors') : ''));
       if(d.scanning){
         wasScanning = true;
-        if(indexed !== lastIndexed){ lastIndexed = indexed; loadList(); } // populate live as rows land
+        if(indexed !== lastIndexed){ lastIndexed = indexed; if(window.scrollY < 300) loadList(true); }
         clearTimeout(statusTimer);
         statusTimer = setTimeout(pollStatus, 1200);
       } else if(wasScanning){
         wasScanning = false;
         lastIndexed = indexed;
-        loadList();
+        if(window.scrollY < 300) loadList(true);
       }
     }catch(_){}
   }
 
   function el(tag, cls){ const e = document.createElement(tag); if(cls) e.className = cls; return e; }
 
+  const io = new IntersectionObserver(
+    es => { if(es.some(e => e.isIntersecting)) loadList(false); },
+    { rootMargin: '600px' } // begin loading before the sentinel is on screen
+  );
+  io.observe($('#sentinel'));
+
   window.addEventListener('hashchange', applyRoute);
-  loadList();
+  loadList(true);
   applyRoute();
   pollStatus();
   setInterval(() => { if(!$('#reader').classList.contains('open')) pollStatus(); }, 15000);

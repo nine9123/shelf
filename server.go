@@ -295,24 +295,31 @@ func (a *App) handleErrors(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleIDReport(w http.ResponseWriter, r *http.Request) {
 	// Numeric IDs claimed by more than one indexed archive (ambiguous favorites).
-	dupMap := map[string][]string{}
+	// Include size and page count so you can judge whether they're the same story.
+	type dupFile struct {
+		Path      string `json:"path"`
+		Size      int64  `json:"size"`
+		PageCount int    `json:"pageCount"`
+	}
+	dupMap := map[string][]dupFile{}
 	if rows, err := a.index.Query(`
-SELECT identity, path FROM archives
+SELECT identity, path, size, page_count FROM archives
 WHERE status='indexed' AND identity IN (
     SELECT identity FROM archives WHERE status='indexed' AND identity LIKE '#%'
     GROUP BY identity HAVING COUNT(*) > 1)
 ORDER BY identity, path`); err == nil {
 		for rows.Next() {
-			var id, p string
-			if rows.Scan(&id, &p) == nil {
-				dupMap[id] = append(dupMap[id], p)
+			var id string
+			var f dupFile
+			if rows.Scan(&id, &f.Path, &f.Size, &f.PageCount) == nil {
+				dupMap[id] = append(dupMap[id], f)
 			}
 		}
 		rows.Close()
 	}
 	duplicates := []map[string]any{}
-	for id, paths := range dupMap {
-		duplicates = append(duplicates, map[string]any{"id": id, "paths": paths})
+	for id, files := range dupMap {
+		duplicates = append(duplicates, map[string]any{"id": id, "files": files})
 	}
 
 	// Archives with no leading "<digits> " ID — these fall back to path identity
