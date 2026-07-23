@@ -11,7 +11,7 @@
     --radius:10px;
   }
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%}
+  html,body{margin:0}
   body{background:var(--bg);color:var(--text);
     font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
   button{font:inherit;color:inherit;cursor:pointer;border:1px solid var(--line);
@@ -72,6 +72,38 @@
   .navzone.left{left:0}
   .navzone.right{right:0}
   @media (max-width:640px){.rtitle{display:none}}
+
+  /* detail view */
+  .detail{position:fixed;inset:0;z-index:18;background:var(--bg);display:none;flex-direction:column}
+  .detail.open{display:flex}
+  .dbar{position:sticky;top:0;display:flex;gap:.6rem;align-items:center;padding:.5rem .8rem;height:52px;
+    background:rgba(23,24,28,.95);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .dbody{flex:1;overflow:auto;padding:1.1rem;max-width:1100px;width:100%;margin:0 auto}
+  .dmeta{display:flex;gap:1.1rem;margin-bottom:1.2rem}
+  .dcover{width:180px;aspect-ratio:2/3;object-fit:cover;background:var(--panel-2);
+    border:1px solid var(--line);border-radius:var(--radius);flex:none}
+  .dinfo{min-width:0}
+  .dcat{font-size:.95rem;margin-bottom:.25rem}
+  .dtags{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.7rem}
+  .chip{font-size:.78rem;padding:.25rem .55rem;border-radius:999px;background:var(--panel-2);
+    border:1px solid var(--line);color:var(--text);cursor:pointer;line-height:1.2}
+  .chip:hover{border-color:var(--accent-dim);color:var(--accent)}
+  .pagegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:.55rem}
+  .pcell{padding:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel-2);
+    cursor:pointer;display:flex;flex-direction:column}
+  .pcell:hover{border-color:var(--accent-dim)}
+  .pcell img{width:100%;aspect-ratio:2/3;object-fit:cover;display:block;background:var(--panel-2)}
+  .pnum{font-size:.72rem;color:var(--muted);text-align:center;padding:.2rem 0}
+
+  /* hover summary popover */
+  .hovercard{position:fixed;z-index:30;width:260px;max-width:80vw;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--radius);padding:.7rem .8rem;
+    box-shadow:0 10px 30px rgba(0,0,0,.5);pointer-events:none;display:none;font-size:.82rem}
+  .hovercard.show{display:block}
+  .hovercard .hc-title{font-weight:600;margin-bottom:.3rem;line-height:1.3}
+  .hovercard .hc-sub{color:var(--muted);margin-bottom:.4rem}
+  .hovercard .hc-tags{color:var(--text);line-height:1.5;max-height:9em;overflow:hidden}
+  .hovercard .hc-ns{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -105,7 +137,7 @@
 
   <div id="reader" class="reader" aria-hidden="true">
     <div class="rbar">
-      <button id="rClose">← Library</button>
+      <button id="rClose">← Back</button>
       <div id="rTitle" class="rtitle"></div>
       <div class="spacer"></div>
       <button id="rFav" class="toggle" aria-pressed="false" title="Favorite">♥</button>
@@ -121,6 +153,33 @@
     <div id="rStage" class="rstage fitH"><img id="rImg" alt=""><img id="rImg2" alt="" hidden></div>
     <div class="navzone left" id="navL"></div>
     <div class="navzone right" id="navR"></div>
+  </div>
+
+  <div id="detail" class="detail" aria-hidden="true">
+    <div class="dbar">
+      <button id="dClose">← Library</button>
+      <div id="dTitle" class="rtitle"></div>
+      <div class="spacer"></div>
+      <button id="dFav" class="toggle" aria-pressed="false" title="Favorite">♥</button>
+      <button id="dRead">Read</button>
+    </div>
+    <div class="dbody">
+      <div class="dmeta">
+        <img id="dCover" class="dcover" alt="">
+        <div class="dinfo">
+          <div id="dCat" class="dcat"></div>
+          <div id="dPages" class="sub"></div>
+          <div id="dTags" class="dtags"></div>
+        </div>
+      </div>
+      <div id="dPageGrid" class="pagegrid"></div>
+    </div>
+  </div>
+
+  <div id="hover" class="hovercard" aria-hidden="true">
+    <div class="hc-title" id="hcTitle"></div>
+    <div class="hc-sub" id="hcSub"></div>
+    <div class="hc-tags" id="hcTags"></div>
   </div>
 
 <script>
@@ -208,30 +267,41 @@
         if(state.fav && !it.favorite) card.remove(); // drop it from the favorites view
       });
       cover.appendChild(fav);
-      cover.addEventListener('click', () => { location.hash = '#/read/' + it.id; });
+      cover.addEventListener('click', () => { location.hash = '#/comic/' + it.id; });
 
       const meta = el('div','meta');
       const sub = it.pageCount + ' pages' + (it.category ? ' · ' + it.category : '');
-      meta.appendChild(Object.assign(el('div','title'), {textContent: it.title || '(untitled)'}));
+      meta.appendChild(Object.assign(el('div','title'), {textContent: cleanName(it.title)}));
       meta.appendChild(Object.assign(el('div','sub'), {textContent: sub}));
 
       card.appendChild(cover); card.appendChild(meta);
+      card.addEventListener('mouseenter', () => hoverEnter(card, it));
+      card.addEventListener('mouseleave', hoverLeave);
       grid.appendChild(card);
     }
   }
 
-  // --- routing: the URL hash is the source of truth for reader state ---
-  //   #/read/{id}          open at the saved page (resume)
-  //   #/read/{id}/{page}   open at a specific page
-  //   anything else        library (reader closed)
-  // Every page turn changes the hash, so it becomes a browser history entry;
-  // Back steps through pages and finally out to the library.
+  // Strip a leading "#id " (e.g. "1234 " or "-42 ") for a clean display name.
+  function cleanName(s){ return (s || '').replace(/^-?\d+\s+/, '') || (s || '(untitled)'); }
+
+  // --- routing: the URL hash is the source of truth ---
+  //   #/comic/{id}         detail view
+  //   #/read/{id}          reader, resume page
+  //   #/read/{id}/{page}   reader at a page (each turn is a history entry)
+  //   anything else        library
   function applyRoute(){
-    const m = location.hash.match(/^#\/read\/(\d+)(?:\/(\d+))?/);
-    if(m){
-      openOrUpdateReader(m[1], m[2] === undefined ? null : parseInt(m[2], 10));
-    } else if($('#reader').classList.contains('open')){
-      hideReader();
+    hoverLeave();
+    const rd = location.hash.match(/^#\/read\/(\d+)(?:\/(\d+))?/);
+    const cm = location.hash.match(/^#\/comic\/(\d+)/);
+    if(rd){
+      hideDetail();
+      openOrUpdateReader(rd[1], rd[2] === undefined ? null : parseInt(rd[2], 10));
+    } else if(cm){
+      if($('#reader').classList.contains('open')) hideReader();
+      openDetail(cm[1]);
+    } else {
+      if($('#reader').classList.contains('open')) hideReader();
+      hideDetail();
     }
   }
 
@@ -242,7 +312,7 @@
       const d = await r.json();
       reader.id = id;
       reader.count = d.pageCount;
-      $('#rTitle').textContent = d.title || '';
+      $('#rTitle').textContent = cleanName(d.title);
       $('#rFav').setAttribute('aria-pressed', d.favorite ? 'true' : 'false');
       applyStageClasses();
       $('#reader').classList.add('open');
@@ -266,6 +336,75 @@
     $('#rImg').src = '';
     $('#rImg2').hidden = true;
     reader.id = null;
+  }
+
+  // --- detail view ---
+  const detail = { id:null };
+  async function openDetail(id){
+    const r = await api('/api/archives/' + id);
+    if(!r.ok){ location.hash = '#/'; return; }
+    const d = await r.json();
+    detail.id = id;
+    $('#dTitle').textContent = cleanName(d.title);
+    $('#dCat').textContent = d.category ? ('Category: ' + d.category) : '';
+    $('#dPages').textContent = d.pageCount + ' pages'
+      + (d.lastPage ? ('  ·  last read p.' + (d.lastPage + 1)) : '');
+    $('#dFav').setAttribute('aria-pressed', d.favorite ? 'true' : 'false');
+    $('#dRead').textContent = d.lastPage > 0 ? ('Resume p.' + (d.lastPage + 1)) : 'Read';
+    const cover = $('#dCover');
+    if(d.hasCover){ cover.src = '/api/archives/' + id + '/cover'; cover.style.display = ''; }
+    else { cover.removeAttribute('src'); cover.style.display = 'none'; }
+    renderDetailTags(d.tags || {});
+    buildPageGrid(id, d.pageCount);
+    $('#detail').classList.add('open');
+    $('#detail').setAttribute('aria-hidden','false');
+    $('.dbody').scrollTop = 0;
+  }
+
+  function renderDetailTags(tags){
+    const box = $('#dTags');
+    box.innerHTML = '';
+    for(const ns of Object.keys(tags).sort()){
+      for(const tag of tags[ns]){
+        const chip = el('button','chip');
+        chip.textContent = ns + ': ' + tag;
+        chip.addEventListener('click', () => filterByTag(ns, tag));
+        box.appendChild(chip);
+      }
+    }
+  }
+
+  function filterByTag(ns, tag){
+    const q = tag.includes(' ') ? (ns + ':"' + tag + '"') : (ns + ':' + tag);
+    $('#q').value = q;
+    state.q = q;
+    location.hash = '#/';
+    loadList(true);
+  }
+
+  function buildPageGrid(id, count){
+    const grid = $('#dPageGrid');
+    grid.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    for(let n = 0; n < count; n++){
+      const cell = el('button','pcell');
+      const img = el('img'); img.loading = 'lazy'; img.alt = ''; img.src = '/api/archives/' + id + '/thumb/' + n;
+      const num = el('div','pnum'); num.textContent = (n + 1);
+      cell.appendChild(img); cell.appendChild(num);
+      const page = n;
+      cell.addEventListener('click', () => { location.hash = '#/read/' + id + '/' + page; });
+      frag.appendChild(cell);
+    }
+    grid.appendChild(frag);
+  }
+
+  function hideDetail(){
+    if(detail.id == null) return;
+    $('#detail').classList.remove('open');
+    $('#detail').setAttribute('aria-hidden','true');
+    $('#dPageGrid').innerHTML = ''; // stop pending lazy thumbnails
+    $('#dCover').removeAttribute('src');
+    detail.id = null;
   }
 
   function renderPage(){
@@ -333,6 +472,7 @@
   }
 
   function exitToLibrary(){ location.hash = '#/'; }
+  function readerBack(){ location.hash = reader.id != null ? ('#/comic/' + reader.id) : '#/'; }
 
   /* controls */
   $('#q').addEventListener('input', e => {
@@ -366,13 +506,64 @@
       } catch(_) { $('#helpNs').textContent = ''; }
     }
   });
-  $('#rClose').addEventListener('click', exitToLibrary);
+  $('#rClose').addEventListener('click', readerBack);
   $('#rFirst').addEventListener('click', () => reader.rtl ? goLast() : goFirst());
   $('#rLast').addEventListener('click', () => reader.rtl ? goFirst() : goLast());
   $('#rLeft').addEventListener('click', () => go(reader.rtl ? 1 : -1));
   $('#rRight').addEventListener('click', () => go(reader.rtl ? -1 : 1));
   $('#navL').addEventListener('click', () => go(reader.rtl ? 1 : -1));
   $('#navR').addEventListener('click', () => go(reader.rtl ? -1 : 1));
+
+  // detail controls
+  $('#dClose').addEventListener('click', exitToLibrary);
+  $('#dRead').addEventListener('click', () => { if(detail.id != null) location.hash = '#/read/' + detail.id; });
+  $('#dFav').addEventListener('click', async e => {
+    if(detail.id == null) return;
+    const on = e.currentTarget.getAttribute('aria-pressed') === 'true';
+    await api('/api/archives/' + detail.id + '/favorite', { method: on ? 'DELETE' : 'PUT' });
+    e.currentTarget.setAttribute('aria-pressed', on ? 'false' : 'true');
+  });
+
+  // hover summary popover over library cards
+  const detailCache = {};
+  let hoverT, hoverCard = null;
+  async function hoverEnter(card, it){
+    hoverCard = card;
+    clearTimeout(hoverT);
+    hoverT = setTimeout(async () => {
+      if(hoverCard !== card) return;
+      let d = detailCache[it.id];
+      if(!d){
+        try { d = await (await api('/api/archives/' + it.id)).json(); detailCache[it.id] = d; }
+        catch(_) { return; }
+      }
+      if(hoverCard !== card) return; // moved away while fetching
+      showHover(card, d);
+    }, 260);
+  }
+  function hoverLeave(){ hoverCard = null; clearTimeout(hoverT); $('#hover').classList.remove('show'); }
+  function showHover(card, d){
+    $('#hcTitle').textContent = cleanName(d.title);
+    $('#hcSub').textContent = (d.category ? d.category + ' · ' : '') + d.pageCount + ' pages'
+      + (d.favorite ? ' · ♥' : '');
+    const tags = d.tags || {};
+    const parts = Object.keys(tags).sort().map(ns =>
+      '<span class="hc-ns">' + esc(ns) + ':</span> ' + tags[ns].map(esc).join(', '));
+    $('#hcTags').innerHTML = parts.join('<br>') || '<span class="hc-ns">no tags</span>';
+    const box = $('#hover');
+    box.classList.add('show');
+    // position to the card's right, clamped to the viewport
+    const r = card.getBoundingClientRect();
+    const bw = box.offsetWidth, bh = box.offsetHeight;
+    let x = r.right + 10, y = r.top;
+    if(x + bw > window.innerWidth - 8) x = r.left - bw - 10;
+    if(x < 8) x = 8;
+    if(y + bh > window.innerHeight - 8) y = window.innerHeight - bh - 8;
+    if(y < 8) y = 8;
+    box.style.left = x + 'px';
+    box.style.top = y + 'px';
+  }
+  function esc(s){ return (s + '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   $('#rFit').addEventListener('click', () => { reader.fitH = !reader.fitH; savePrefs(); syncReaderButtons(); });
   $('#rSpread').addEventListener('click', () => {
     reader.spread = !reader.spread;
@@ -388,12 +579,15 @@
     e.currentTarget.setAttribute('aria-pressed', on ? 'false' : 'true');
   });
   document.addEventListener('keydown', e => {
-    if(!$('#reader').classList.contains('open')) return;
-    if(e.key === 'Escape') exitToLibrary();
-    else if(e.key === 'Home') goFirst();
-    else if(e.key === 'End') goLast();
-    else if(e.key === 'ArrowRight') go(reader.rtl ? -1 : 1);
-    else if(e.key === 'ArrowLeft') go(reader.rtl ? 1 : -1);
+    if($('#reader').classList.contains('open')){
+      if(e.key === 'Escape') readerBack();
+      else if(e.key === 'Home') goFirst();
+      else if(e.key === 'End') goLast();
+      else if(e.key === 'ArrowRight') go(reader.rtl ? -1 : 1);
+      else if(e.key === 'ArrowLeft') go(reader.rtl ? 1 : -1);
+      return;
+    }
+    if(e.key === 'Escape' && $('#detail').classList.contains('open')) exitToLibrary();
   });
 
   /* scan + status */

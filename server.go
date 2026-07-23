@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +37,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/archives/{id}", a.handleDetail)
 	mux.HandleFunc("GET /api/archives/{id}/cover", a.handleCover)
 	mux.HandleFunc("GET /api/archives/{id}/page/{n}", a.handlePage)
+	mux.HandleFunc("GET /api/archives/{id}/thumb/{n}", a.handleThumb)
 	mux.HandleFunc("PUT /api/archives/{id}/favorite", a.handleFavAdd)
 	mux.HandleFunc("DELETE /api/archives/{id}/favorite", a.handleFavDel)
 	mux.HandleFunc("PUT /api/archives/{id}/progress", a.handleProgress)
@@ -219,6 +221,59 @@ func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	io.Copy(w, rc)
+}
+
+func (a *App) handleThumb(w http.ResponseWriter, r *http.Request) {
+	relPath, mt, ok := a.lookup(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 0 {
+		http.Error(w, "bad page number", http.StatusBadRequest)
+		return
+	}
+	etag := fmt.Sprintf(`"t%s-%d-%d"`, r.PathValue("id"), mt, n)
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	abs := filepath.Join(a.cfg.RootDir, filepath.FromSlash(relPath))
+	arc, err := openArchive(abs)
+	if err != nil {
+		http.Error(w, "cannot open archive", http.StatusInternalServerError)
+		return
+	}
+	defer arc.Close()
+	imgs := arc.Images()
+	if n >= len(imgs) {
+		http.NotFound(w, r)
+		return
+	}
+	rc, err := arc.Open(imgs[n])
+	if err != nil {
+		http.Error(w, "cannot read page", http.StatusInternalServerError)
+		return
+	}
+	raw, _ := io.ReadAll(io.LimitReader(rc, 48<<20)) // cap 48 MB per page
+	rc.Close()
+
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	var buf bytes.Buffer
+	if makeThumbTo(bytes.NewReader(raw), 240, &buf) == nil {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(buf.Bytes())
+		return
+	}
+	// couldn't decode/resize (e.g. AVIF/JXL) — serve the original bytes instead
+	ct := ctByExt[strings.ToLower(path.Ext(imgs[n]))]
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Write(raw)
 }
 
 func (a *App) handleFavAdd(w http.ResponseWriter, r *http.Request) {
