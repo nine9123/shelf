@@ -166,10 +166,25 @@ func bsdtarList(absPath string) ([]string, error) {
 	return names, nil
 }
 
+// bsdtarPattern escapes shell-glob metacharacters so an entry name is matched
+// literally. bsdtar treats the operand as a pattern, and names containing
+// [ ] * ? (very common in these archives) would otherwise fail to match.
+func bsdtarPattern(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch r {
+		case '\\', '*', '?', '[', ']':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // bsdtarExtract streams a single entry to stdout. Closing the returned reader
 // stops and reaps the child process.
 func bsdtarExtract(absPath, entry string) (io.ReadCloser, error) {
-	cmd := exec.Command("bsdtar", "-x", "-O", "-f", absPath, "--", entry)
+	cmd := exec.Command("bsdtar", "-x", "-O", "-f", absPath, "--", bsdtarPattern(entry))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
