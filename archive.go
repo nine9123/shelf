@@ -2,6 +2,8 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
+	"errors"
 	"io"
 	"os/exec"
 	"path"
@@ -151,12 +153,18 @@ func openLibarchive(absPath string) (*pageArchive, error) {
 }
 
 func bsdtarList(absPath string) ([]string, error) {
-	out, err := exec.Command("bsdtar", "-tf", absPath).Output()
-	if err != nil {
+	cmd := exec.Command("bsdtar", "-tf", absPath)
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		if msg := firstLine(errb.String()); msg != "" {
+			return nil, errors.New(msg) // e.g. "bsdtar: Error opening archive: Unrecognized archive format"
+		}
 		return nil, err
 	}
 	var names []string
-	for _, n := range strings.Split(string(out), "\n") {
+	for _, n := range strings.Split(out.String(), "\n") {
 		n = strings.TrimRight(n, "\r")
 		if n == "" || strings.HasSuffix(n, "/") {
 			continue
@@ -164,6 +172,14 @@ func bsdtarList(absPath string) ([]string, error) {
 		names = append(names, n)
 	}
 	return names, nil
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 // bsdtarPattern escapes shell-glob metacharacters so an entry name is matched

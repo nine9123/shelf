@@ -22,6 +22,7 @@ type App struct {
 	results  chan result
 	scanning atomic.Bool
 	lastScan atomic.Int64
+	sem      *Semantic
 }
 
 func main() {
@@ -47,6 +48,16 @@ func main() {
 	}
 	app.startWorkers()
 	go app.scanLoop()
+
+	// Optional semantic search: only active when OLLAMA_URL is set.
+	app.sem = &Semantic{cfg: cfg, index: index, user: user}
+	if cfg.OllamaURL != "" {
+		app.sem.ol = NewOllama(cfg.OllamaURL, cfg.EmbedModel, cfg.VisionModel)
+		app.sem.LoadIndex()
+		go app.sem.Run()
+		log.Printf("semantic: enabled via %s (embed=%s vision=%s), %d embeddings loaded",
+			cfg.OllamaURL, cfg.EmbedModel, cfg.VisionModel, app.sem.count())
+	}
 
 	log.Printf("shelf: library=%s cache=%s workers=%d listening on %s",
 		cfg.RootDir, cfg.CacheDir, cfg.Workers, cfg.ListenAddr)

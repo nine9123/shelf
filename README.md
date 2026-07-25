@@ -141,6 +141,43 @@ its `> namespace: v1, v2` tag lines into a searchable tag index (`tags` table) a
 a `category` column — both derived, both in the disposable cache, rebuilt on scan.
 Length isn't parsed; the archive's image count is the length.
 
+## Semantic search (optional)
+
+Natural-language, "by meaning" search over your library — e.g. *"cosmic felines
+in a bright spaceship"* — powered by a local [Ollama](https://ollama.com) server.
+Disabled unless `OLLAMA_URL` is set.
+
+How it works: a low-priority background worker captions each archive's cover with
+a vision model, combines that with the title/tags/category, and embeds the result
+with a multilingual model. Queries are embedded the same way and ranked by cosine
+similarity in memory (no vector database — ~118 MB for 38k archives, sub-ms). Toggle
+**Semantic** in the header and type a description.
+
+Setup:
+
+```
+ollama pull bge-m3     # multilingual embeddings — handles Japanese + English
+ollama pull llava      # vision model for captions (or 'moondream' for ~2-3x speed)
+```
+
+Then set `OLLAMA_URL` (see `.env.example`). Notes and trade-offs:
+
+- **It's a background batch.** Captioning is ~1 vision inference per archive; on a
+  single mid-range GPU, tens of thousands of archives take **hours to a couple of
+  days**. Search works incrementally over whatever's embedded so far (favorites
+  first); check progress at `GET /api/semantic/status`.
+- **This is situational search, not plot search.** A cover caption captures setting,
+  characters, and mood — great for "find the space-station ones" — but not specific
+  story beats. True plot search would need OCR of the interior pages (a much larger,
+  language-dependent job); this is a natural future phase.
+- **Embeddings are durable.** They live in `user.db` keyed by identity, so dropping
+  the disposable cache never forces re-inference, and captions follow a file through
+  moves, renames, and re-encodes.
+- If Ollama is unreachable the app runs normally; the worker retries and semantic
+  queries return a clear error.
+
+New endpoints: `GET /api/semantic?q=` (ranked results) and `GET /api/semantic/status`.
+
 ## Configuration
 
 The app itself reads these:

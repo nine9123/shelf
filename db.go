@@ -101,6 +101,19 @@ CREATE TABLE IF NOT EXISTS cover_override (
     identity   TEXT PRIMARY KEY,
     page       INTEGER NOT NULL,   -- image index to use as the cover (0-based)
     updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS descriptions (
+    identity   TEXT PRIMARY KEY,
+    text       TEXT NOT NULL,      -- caption + metadata, the text that gets embedded
+    src        TEXT NOT NULL,      -- vision model that produced the caption
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS embeddings (
+    identity   TEXT PRIMARY KEY,
+    model      TEXT NOT NULL,
+    dim        INTEGER NOT NULL,
+    vec        BLOB NOT NULL,      -- float32 little-endian; expensive to regenerate, so durable
+    updated_at INTEGER NOT NULL
 );`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()

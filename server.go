@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,6 +53,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/id-report", a.handleIDReport)
 	mux.HandleFunc("GET /api/namespaces", a.handleNamespaces)
 	mux.HandleFunc("GET /api/tags", a.handleTagValues)
+	mux.HandleFunc("GET /api/semantic", a.handleSemantic)
+	mux.HandleFunc("GET /api/semantic/status", a.handleSemanticStatus)
 	mux.HandleFunc("GET /", a.handleIndex)
 	return mux
 }
@@ -177,6 +180,55 @@ func (a *App) handleTagValues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tags": out})
+}
+
+func (a *App) handleSemantic(w http.ResponseWriter, r *http.Request) {
+	if !a.sem.enabled() {
+		httpErr(w, http.StatusServiceUnavailable, fmt.Errorf("semantic search is disabled (set OLLAMA_URL)"))
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []archiveItem{}})
+		return
+	}
+	limit := clampInt(atoiDefault(r.URL.Query().Get("limit"), 60), 1, 200)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	qv, err := a.sem.ol.Embed(ctx, q)
+	if err != nil {
+		httpErr(w, http.StatusServiceUnavailable, fmt.Errorf("embed query: %w", err))
+		return
+	}
+	favSet := a.favoriteIDSet()
+	items := []archiveItem{}
+	for _, h := range a.sem.searchVec(qv, limit) {
+		var it archiveItem
+		var hc int
+		if a.index.QueryRow(
+			`SELECT id, path, title, page_count, has_cover, category, indexed_at FROM archives WHERE identity=? AND status='indexed' LIMIT 1`,
+			h.id).Scan(&it.ID, &it.Path, &it.Title, &it.PageCount, &hc, &it.Category, &it.CoverVer) == nil {
+			it.HasCover = hc == 1
+			it.Favorite = favSet[h.id]
+			items = append(items, it)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "query": q})
+}
+
+func (a *App) handleSemanticStatus(w http.ResponseWriter, r *http.Request) {
+	lastErr, _ := a.sem.lastErr.Load().(string)
+	total := 0
+	a.index.QueryRow(`SELECT COUNT(*) FROM archives WHERE status='indexed'`).Scan(&total)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":     a.sem.enabled(),
+		"embedModel":  a.cfg.EmbedModel,
+		"visionModel": a.cfg.VisionModel,
+		"embedded":    a.sem.count(),
+		"total":       total,
+		"working":     a.sem.working.Load(),
+		"lastError":   lastErr,
+	})
 }
 
 func (a *App) handleNamespaces(w http.ResponseWriter, r *http.Request) {

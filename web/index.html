@@ -127,6 +127,7 @@
     <button id="qHelp" class="toggle" title="Search syntax" aria-pressed="false">?</button>
     <button id="favBtn" class="toggle" aria-pressed="false">Favorites</button>
     <button id="dupBtn" class="toggle" title="Hide comics that share an ID">Hide dupes</button>
+    <button id="semBtn" class="toggle" title="Search by meaning (needs Ollama)">Semantic</button>
     <div class="spacer"></div>
     <div id="status" class="status"></div>
     <button id="scanBtn">Scan</button>
@@ -208,7 +209,7 @@
   const prefs = loadPrefs();
   const def = (v, d) => v !== undefined ? v : d;
 
-  const state = { q:'', fav:false, hideDupes: def(prefs.hideDupes, true), offset:0, limit:60, loading:false, done:false };
+  const state = { q:'', fav:false, semantic:false, hideDupes: def(prefs.hideDupes, true), offset:0, limit:60, loading:false, done:false };
   const reader = { id:null, page:0, count:0,
     rtl: def(prefs.rtl, true), fitH: def(prefs.fitH, true), spread: def(prefs.spread, true) };
 
@@ -220,6 +221,7 @@
 
   let listSeq = 0;
   async function loadList(reset){
+    if(state.semantic && state.q){ return loadSemantic(); }
     if(!reset && (state.loading || state.done)) return;
     if(reset){ state.offset = 0; state.done = false; $('#grid').innerHTML = ''; }
     const mySeq = ++listSeq;
@@ -259,6 +261,32 @@
   function sentinelVisible(){
     const r = $('#sentinel').getBoundingClientRect();
     return r.top < window.innerHeight + 600;
+  }
+
+  // Semantic search: ranked results, no pagination.
+  async function loadSemantic(){
+    state.done = true;
+    const mySeq = ++listSeq;
+    $('#grid').innerHTML = '';
+    $('#empty').hidden = true;
+    $('#sentinel').textContent = 'Searching…';
+    let data = null;
+    try { data = await (await api('/api/semantic?q=' + encodeURIComponent(state.q))).json(); } catch(_) {}
+    if(mySeq !== listSeq) return;
+    $('#sentinel').textContent = '';
+    if(!data || data.error){
+      $('#empty').hidden = false;
+      $('#empty').textContent = (data && data.error) ? data.error : 'Semantic search unavailable.';
+      return;
+    }
+    const items = data.items || [];
+    if(items.length === 0){
+      $('#empty').hidden = false;
+      $('#empty').textContent = 'No matches yet — the semantic index may still be building.';
+      return;
+    }
+    $('#empty').hidden = true;
+    appendItems(items);
   }
 
   function appendItems(items){
@@ -557,6 +585,15 @@
     savePrefs();
     loadList(true);
   });
+  $('#semBtn').addEventListener('click', e => {
+    state.semantic = !state.semantic;
+    e.currentTarget.setAttribute('aria-pressed', state.semantic ? 'true' : 'false');
+    $('#q').placeholder = state.semantic
+      ? 'Describe what you\u2019re looking for\u2026'
+      : 'Search \u2014 words, or artist:foo  parody:bar';
+    if(state.semantic) hideAC();
+    loadList(true);
+  });
   let nsLoaded = false;
   $('#qHelp').addEventListener('click', async e => {
     const box = $('#helpBox');
@@ -648,6 +685,7 @@
   }
   function scheduleAutocomplete(){
     clearTimeout(acT);
+    if(state.semantic){ hideAC(); return; }
     const m = currentToken().text.match(/^([\w]+):(.*)$/);
     if(!m){ hideAC(); return; }
     const ns = m[1], prefix = m[2].replace(/^"/, '');

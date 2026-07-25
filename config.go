@@ -21,6 +21,12 @@ type Config struct {
 	ScanInterval time.Duration
 	Workers      int
 	ThumbWidth   int
+
+	// Semantic search (optional). Empty OllamaURL disables the whole feature.
+	OllamaURL     string
+	EmbedModel    string
+	VisionModel   string
+	SemanticDelay time.Duration // pause between archives so the GPU job stays low-priority
 }
 
 func LoadConfig() Config {
@@ -31,6 +37,11 @@ func LoadConfig() Config {
 		ScanInterval: envDur("SCAN_INTERVAL", 15*time.Minute),
 		Workers:      envInt("WORKER_CONCURRENCY", runtime.NumCPU()),
 		ThumbWidth:   envInt("THUMB_WIDTH", 400),
+
+		OllamaURL:     envStr("OLLAMA_URL", ""),
+		EmbedModel:    envStr("EMBED_MODEL", "bge-m3"),
+		VisionModel:   envStr("VISION_MODEL", "llava"),
+		SemanticDelay: envDur("SEMANTIC_DELAY", 0),
 	}
 	if c.Workers < 1 {
 		c.Workers = 1
