@@ -94,7 +94,7 @@ func TestOllamaClient(t *testing.T) {
 			}
 			json.NewEncoder(w).Encode(map[string]any{"response": "  a scene  "})
 		case "/api/tags":
-			w.WriteHeader(200)
+			json.NewEncoder(w).Encode(map[string]any{"models": []map[string]string{{"name": "llava:latest"}}})
 		default:
 			w.WriteHeader(404)
 		}
@@ -106,6 +106,12 @@ func TestOllamaClient(t *testing.T) {
 
 	if !ol.Reachable(ctx) {
 		t.Fatal("Reachable = false")
+	}
+	if !ol.HasModel(ctx, "llava") {
+		t.Fatal("HasModel(llava) = false")
+	}
+	if ol.HasModel(ctx, "nonexistent") {
+		t.Fatal("HasModel(nonexistent) = true")
 	}
 	v, err := ol.Embed(ctx, "hello")
 	if err != nil || len(v) != 3 || v[0] != 0.1 {

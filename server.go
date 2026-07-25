@@ -55,6 +55,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/tags", a.handleTagValues)
 	mux.HandleFunc("GET /api/semantic", a.handleSemantic)
 	mux.HandleFunc("GET /api/semantic/status", a.handleSemanticStatus)
+	mux.HandleFunc("POST /api/semantic/reset", a.handleSemanticReset)
 	mux.HandleFunc("GET /", a.handleIndex)
 	return mux
 }
@@ -214,6 +215,19 @@ func (a *App) handleSemantic(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "query": q})
+}
+
+func (a *App) handleSemanticReset(w http.ResponseWriter, r *http.Request) {
+	if !a.sem.enabled() {
+		httpErr(w, http.StatusServiceUnavailable, fmt.Errorf("semantic search is disabled"))
+		return
+	}
+	// Wipe only the derived semantic data; favorites, progress, and cover
+	// overrides in user.db are untouched.
+	a.user.Exec(`DELETE FROM embeddings`)
+	a.user.Exec(`DELETE FROM descriptions`)
+	a.sem.reset()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (a *App) handleSemanticStatus(w http.ResponseWriter, r *http.Request) {

@@ -108,6 +108,16 @@ func (s *Semantic) has(id string) bool {
 	return ok
 }
 
+// reset clears the in-memory index (after the durable tables are wiped) so the
+// worker re-captions and re-embeds everything, e.g. after pulling a better model.
+func (s *Semantic) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ids = nil
+	s.vecs = nil
+	s.pos = map[string]int{}
+}
+
 // Run is the background worker. It captions covers and embeds descriptions,
 // low-priority and incrementally, so search works over whatever's done so far.
 func (s *Semantic) Run() {
@@ -122,6 +132,18 @@ func (s *Semantic) Run() {
 			s.lastErr.Store("Ollama not reachable at " + s.cfg.OllamaURL)
 			time.Sleep(30 * time.Second)
 			continue
+		}
+		// Require the vision model to be present, so a missing model stalls with a
+		// clear message rather than silently producing caption-less embeddings.
+		if s.cfg.VisionModel != "" {
+			vctx, vcancel := context.WithTimeout(context.Background(), 5*time.Second)
+			has := s.ol.HasModel(vctx, s.cfg.VisionModel)
+			vcancel()
+			if !has {
+				s.lastErr.Store("vision model \"" + s.cfg.VisionModel + "\" not found — run: ollama pull " + s.cfg.VisionModel)
+				time.Sleep(30 * time.Second)
+				continue
+			}
 		}
 		batch := s.nextBatch(16)
 		if len(batch) == 0 {

@@ -79,6 +79,46 @@ func (o *Ollama) Reachable(ctx context.Context) bool {
 	return resp.StatusCode == 200
 }
 
+// HasModel reports whether a model (matched on the name before any ":tag") is
+// pulled. Used to fail loudly when the vision model is missing instead of
+// silently producing caption-less embeddings.
+func (o *Ollama) HasModel(ctx context.Context, name string) bool {
+	req, err := http.NewRequestWithContext(ctx, "GET", o.url+"/api/tags", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := o.hc.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return false
+	}
+	defer resp.Body.Close()
+	var r struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&r) != nil {
+		return false
+	}
+	want := baseModel(name)
+	for _, m := range r.Models {
+		if strings.EqualFold(baseModel(m.Name), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func baseModel(n string) string {
+	if i := strings.IndexByte(n, ':'); i >= 0 {
+		return n[:i]
+	}
+	return n
+}
+
 func (o *Ollama) post(ctx context.Context, path string, body any, out any) error {
 	b, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, "POST", o.url+path, bytes.NewReader(b))
