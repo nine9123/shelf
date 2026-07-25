@@ -151,6 +151,8 @@ func (a *App) handleDetail(w http.ResponseWriter, r *http.Request) {
 		rows.Close()
 	}
 	coverPage, coverOverridden := a.coverOverridePage(identity) // page 0 when not overridden
+	var description, descModel string
+	a.user.QueryRow(`SELECT text, src FROM descriptions WHERE identity=?`, identity).Scan(&description, &descModel)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": it.ID, "path": it.Path, "title": it.Title,
 		"pageCount": it.PageCount, "hasCover": hc == 1,
@@ -158,6 +160,7 @@ func (a *App) handleDetail(w http.ResponseWriter, r *http.Request) {
 		"lastPage": a.readProgress(identity),
 		"category": category, "tags": tags,
 		"coverPage": coverPage, "coverOverridden": coverOverridden, "coverVer": coverVer,
+		"description": description, "descriptionModel": descModel,
 	})
 }
 

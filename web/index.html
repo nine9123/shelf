@@ -87,6 +87,10 @@
   .dtags{margin-top:.7rem}
   .tgroup{display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem;margin-bottom:.45rem}
   .tgl{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;min-width:84px;flex:none}
+  .ddesc{margin-top:.9rem;max-width:680px;font-size:.83rem;line-height:1.55;color:var(--muted);
+    border-left:2px solid var(--line);padding:.15rem 0 .15rem .7rem}
+  .ddesc .dd-label{display:block;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--muted);opacity:.8;margin-bottom:.25rem}
   .chip{font-size:.78rem;padding:.25rem .55rem;border-radius:999px;background:var(--panel-2);
     border:1px solid var(--line);color:var(--text);cursor:pointer;line-height:1.2}
   .chip:hover{border-color:var(--accent-dim);color:var(--accent)}
@@ -188,6 +192,7 @@
           <div id="dCat" class="dcat"></div>
           <div id="dPages" class="sub"></div>
           <div id="dTags" class="dtags"></div>
+          <div id="dDesc" class="ddesc" hidden></div>
         </div>
       </div>
       <div id="dPageGrid" class="pagegrid"></div>
@@ -412,6 +417,16 @@
     else { cover.removeAttribute('src'); cover.style.display = 'none'; }
     detail.coverPage = (d.coverPage != null ? d.coverPage : 0);
     renderDetailTags(d.tags || {});
+    const dd = $('#dDesc');
+    if(d.description){
+      dd.innerHTML = '';
+      dd.appendChild(Object.assign(el('span','dd-label'),
+        {textContent: 'Indexed as' + (d.descriptionModel ? ' · ' + d.descriptionModel : '')}));
+      dd.appendChild(document.createTextNode(d.description));
+      dd.hidden = false;
+    } else {
+      dd.hidden = true;
+    }
     buildPageGrid(id, d.pageCount, detail.coverPage);
     $('#detail').classList.add('open');
     $('#detail').setAttribute('aria-hidden','false');

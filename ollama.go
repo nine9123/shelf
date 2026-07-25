@@ -54,10 +54,11 @@ func (o *Ollama) Caption(ctx context.Context, img []byte, prompt string) (string
 		Response string `json:"response"`
 	}
 	body := map[string]any{
-		"model":  o.visM,
-		"prompt": prompt,
-		"stream": false,
-		"images": []string{base64.StdEncoding.EncodeToString(img)},
+		"model":   o.visM,
+		"prompt":  prompt,
+		"stream":  false,
+		"images":  []string{base64.StdEncoding.EncodeToString(img)},
+		"options": map[string]any{"num_predict": 120, "temperature": 0.2},
 	}
 	if err := o.post(ctx, "/api/generate", body, &r); err != nil {
 		return "", err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -14,7 +15,7 @@ import (
 	"time"
 )
 
-const captionPrompt = "You are describing a manga/comic page for a search index. In 2-3 sentences, describe the setting, the characters (how many, their appearance), the mood, and what is happening. Focus on concrete visual details useful for search. Do not add commentary or refuse."
+const captionPrompt = "Describe this manga/comic page for a search index in one or two concise sentences: the setting, the characters (how many, appearance), the mood, and what is happening. State only concrete visual details. Do not refuse or add commentary."
 
 // Semantic owns the durable description/embedding store, an in-memory vector
 // index for cosine search, and a background worker that populates it via Ollama.
@@ -267,11 +268,18 @@ func (s *Semantic) captionCover(relPath string) string {
 	if err != nil {
 		return ""
 	}
-	raw, _ := io.ReadAll(io.LimitReader(rc, 12<<20))
+	raw, _ := io.ReadAll(io.LimitReader(rc, 32<<20))
 	rc.Close()
+	// Normalize to a modest JPEG: this fixes vision models that can't decode WebP
+	// and friends, and shrinks the image so encoding is much faster. If we can't
+	// decode it (e.g. AVIF/JXL), skip the caption and embed on metadata alone.
+	var jpg bytes.Buffer
+	if makeThumbTo(bytes.NewReader(raw), 1024, &jpg) != nil {
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	cap, err := s.ol.Caption(ctx, raw, captionPrompt)
+	cap, err := s.ol.Caption(ctx, jpg.Bytes(), captionPrompt)
 	if err != nil {
 		return ""
 	}

@@ -2,8 +2,11 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/jpeg"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -135,7 +138,9 @@ func TestProcessOneAndSearch(t *testing.T) {
 	}
 	zw := zip.NewWriter(zf)
 	w, _ := zw.Create("01.jpg")
-	w.Write([]byte("bytes-sent-to-caption-mock"))
+	var jb bytes.Buffer
+	jpeg.Encode(&jb, image.NewRGBA(image.Rect(0, 0, 8, 8)), nil) // a real (tiny) JPEG to normalize
+	w.Write(jb.Bytes())
 	zw.Close()
 	zf.Close()
 
