@@ -120,6 +120,9 @@ ROOT_DIR=/path/to/archives CACHE_DIR=/tmp/shelf-cache go run .
 | GET | `/api/errors` | Archives that failed to index, with the reason |
 | GET | `/api/id-report` | Duplicate IDs (with size + page count) and files missing an ID |
 | GET | `/api/namespaces` | Distinct tag namespaces present, with counts |
+| GET | `/api/auth/status` | `{required, authenticated}` — public |
+| POST | `/api/auth/login` | Exchange `{ "key": "…" }` for a session cookie — public |
+| POST | `/api/auth/logout` | Clear the session cookie — public |
 
 `id` is the cache row id (fine within a session). Favorites/progress are stored
 by **identity** (the leading `#id`), so they follow a file across moves, renames,
@@ -140,6 +143,46 @@ If an archive contains an `info.txt`, the scanner parses its `Category:` line an
 its `> namespace: v1, v2` tag lines into a searchable tag index (`tags` table) and
 a `category` column — both derived, both in the disposable cache, rebuilt on scan.
 Length isn't parsed; the archive's image count is the length.
+
+## Authentication (optional)
+
+Set `API_KEY` and the whole app goes behind a single shared key. Leave it unset
+and Shelf is open to anyone who can reach the port, exactly as before — so an
+existing deployment doesn't change behaviour until you opt in. The startup log
+says which mode you're in.
+
+```bash
+# generate something long and random, then put it in .env
+openssl rand -base64 32
+```
+
+You get a login page: type the key once, and it's kept in the browser's
+localStorage so return visits go straight through. **Lock** in the header
+forgets it on that device.
+
+**How it works.** The browser trades the key for an `HttpOnly` session cookie at
+`/api/auth/login`. The cookie — not a header — is what authenticates requests,
+because the reader loads pages and covers as `<img src="/api/…">` and an image
+request can't carry an `Authorization` header. The saved key exists so a
+returning visitor can re-establish the cookie silently instead of retyping it;
+if the cookie expires mid-session the page repairs it and retries without a
+prompt. Scripts can skip all of that and send the key directly:
+
+```bash
+curl -H "X-API-Key: $API_KEY" http://localhost:8080/api/archives
+curl -H "Authorization: Bearer $API_KEY" http://localhost:8080/api/status
+```
+
+Only the HTML shell (`/`) and the three `/api/auth/*` endpoints are reachable
+without a key; everything else — including every cover and page — returns 401.
+Failed logins are throttled per client IP (8 per 5 minutes).
+
+**What this is and isn't.** It's one shared key for one household, not user
+accounts: there's no per-user state, and anyone with the key has full access
+including **Scan** and cover edits. The key crosses the wire in the clear over
+plain HTTP, so if you expose Shelf beyond your LAN, put it behind a reverse
+proxy with TLS — the cookie sets its `Secure` flag automatically when the
+connection is HTTPS (or when the proxy sends `X-Forwarded-Proto: https`).
 
 ## Semantic search (optional)
 
@@ -190,6 +233,7 @@ The app itself reads these:
 | `SCAN_INTERVAL` | `15m` | Re-scan period; `0` = once at boot only |
 | `WORKER_CONCURRENCY` | number of CPUs | Parallel indexers |
 | `THUMB_WIDTH` | `400` | Cover width in px |
+| `API_KEY` | — (empty) | Shared key for the whole app; empty = no authentication |
 | `INDEX_DB_PATH` / `USER_DB_PATH` | under `CACHE_DIR` | Override DB locations |
 
 These are Docker-only (used by Compose and the entrypoint, not the binary):
@@ -280,3 +324,9 @@ is a small, isolated change when you want it:
   will feel it. The per-archive page cache below removes this.
 - Page order is natural-sorted by filename; it assumes filenames sort into
   reading order, which is the usual convention for these archives.
+- **Auth is one shared key, not user accounts.** `API_KEY` gates everything or
+  nothing; there are no roles, no per-user favorites, and no way to revoke one
+  device without rotating the key for all of them. That matches the app's single
+  `user.db` — real accounts would mean keying favorites and progress by user,
+  which is a much larger change. Left off by default so existing setups keep
+  working; see [Authentication](#authentication-optional).

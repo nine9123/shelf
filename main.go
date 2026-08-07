@@ -20,6 +20,7 @@ type App struct {
 	user     *sql.DB
 	jobs     chan job
 	results  chan result
+	logins   *loginLimiter
 	scanning atomic.Bool
 	lastScan atomic.Int64
 	sem      *Semantic
@@ -45,6 +46,7 @@ func main() {
 		user:    user,
 		jobs:    make(chan job, cfg.Workers*2),
 		results: make(chan result, cfg.Workers*2),
+		logins:  newLoginLimiter(),
 	}
 	app.startWorkers()
 	go app.scanLoop()
@@ -57,6 +59,15 @@ func main() {
 		go app.sem.Run()
 		log.Printf("semantic: enabled via %s (embed=%s vision=%s), %d embeddings loaded",
 			cfg.OllamaURL, cfg.EmbedModel, cfg.VisionModel, app.sem.count())
+	}
+
+	switch {
+	case cfg.APIKey == "":
+		log.Printf("auth: DISABLED — anyone who can reach %s can read the library (set API_KEY to require a key)", cfg.ListenAddr)
+	case len(cfg.APIKey) < 16:
+		log.Printf("auth: enabled, but API_KEY is only %d characters — use something long and random", len(cfg.APIKey))
+	default:
+		log.Printf("auth: enabled (API_KEY)")
 	}
 
 	log.Printf("shelf: library=%s cache=%s workers=%d listening on %s",

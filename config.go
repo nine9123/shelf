@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,9 @@ type Config struct {
 	Workers      int
 	ThumbWidth   int
 
+	// Shared secret for the whole app. Empty means no authentication at all.
+	APIKey string
+
 	// Semantic search (optional). Empty OllamaURL disables the whole feature.
 	OllamaURL     string
 	EmbedModel    string
@@ -37,6 +41,9 @@ func LoadConfig() Config {
 		ScanInterval: envDur("SCAN_INTERVAL", 15*time.Minute),
 		Workers:      envInt("WORKER_CONCURRENCY", runtime.NumCPU()),
 		ThumbWidth:   envInt("THUMB_WIDTH", 400),
+		// Trimmed because keys are usually pasted, and a trailing newline from
+		// `API_KEY=$(cat key.txt)` would otherwise never match what's typed in.
+		APIKey: strings.TrimSpace(envStr("API_KEY", "")),
 
 		OllamaURL:     envStr("OLLAMA_URL", ""),
 		EmbedModel:    envStr("EMBED_MODEL", "bge-m3"),
