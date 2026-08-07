@@ -12,6 +12,7 @@ services:
       SCAN_INTERVAL: 15m         # set 0 to scan once at boot and rely on the Scan button
       WORKER_CONCURRENCY: "4"    # parallel indexers; raise on multi-core boxes
       THUMB_WIDTH: "400"
+      API_KEY: "${API_KEY:-}"    # set in .env to require a key; empty = no auth
     volumes:
       # Your archive root -> where the app looks inside the container. READ-ONLY.
       - ${LIBRARY_PATH:?set LIBRARY_PATH in .env to your archive root}:/data/library:ro

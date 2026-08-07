@@ -122,6 +122,21 @@
   .acitem{padding:.4rem .7rem;cursor:pointer;font-size:.85rem;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis;max-width:360px}
   .acitem:hover,.acitem.sel{background:var(--panel-2);color:var(--accent)}
+
+  /* login gate — covers everything until a key is accepted */
+  .login{position:fixed;inset:0;z-index:60;background:var(--bg);display:none;place-items:center;padding:1.1rem}
+  .login.open{display:grid}
+  .login form{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:1.4rem 1.5rem;width:min(360px,100%)}
+  .login .lg-brand{font-weight:600;font-size:1.3rem;letter-spacing:.02em}
+  .login .lg-brand span{color:var(--accent)}
+  .login .lg-hint{color:var(--muted);font-size:.85rem;margin:.3rem 0 1rem}
+  .login input{font:inherit;color:inherit;background:var(--panel-2);border:1px solid var(--line);
+    border-radius:8px;padding:.55rem .75rem;width:100%}
+  .login input:focus{outline:none;border-color:var(--accent-dim)}
+  .login button{width:100%;margin-top:.7rem;border-color:var(--accent-dim);color:var(--accent)}
+  .login button[disabled]{opacity:.6;cursor:default}
+  .login .lg-err{color:#e07a6a;font-size:.85rem;margin-top:.6rem;min-height:1.2em}
 </style>
 </head>
 <body>
@@ -135,7 +150,19 @@
     <div class="spacer"></div>
     <div id="status" class="status"></div>
     <button id="scanBtn">Scan</button>
+    <button id="lockBtn" title="Forget the saved API key on this device" hidden>Lock</button>
   </header>
+
+  <div id="login" class="login" aria-hidden="true">
+    <form id="loginForm">
+      <div class="lg-brand">Shelf<span>.</span></div>
+      <div class="lg-hint">This library is private. Enter its API key to continue.</div>
+      <input id="loginKey" type="password" name="password" placeholder="API key"
+             autocomplete="current-password" spellcheck="false" autocapitalize="off">
+      <button type="submit" id="loginBtn">Unlock</button>
+      <div id="loginErr" class="lg-err" role="alert"></div>
+    </form>
+  </div>
 
   <div id="acBox" class="acbox" hidden></div>
 
@@ -207,7 +234,93 @@
 
 <script>
   const $ = s => document.querySelector(s);
-  const api = (p, opt) => fetch(p, opt);
+
+  // --- auth ---------------------------------------------------------------
+  // The key is kept in localStorage and exchanged for a session cookie. The
+  // cookie is what actually authenticates requests, because the reader loads
+  // pages and covers through <img src>, which can't send a header. Keeping the
+  // key means a return visit re-establishes the cookie without a prompt.
+  const KEY_STORE = 'shelf.apiKey';
+  const getKey = () => { try { return localStorage.getItem(KEY_STORE) || ''; } catch(_) { return ''; } };
+  const setKey = k => {
+    try { k ? localStorage.setItem(KEY_STORE, k) : localStorage.removeItem(KEY_STORE); } catch(_) {}
+  };
+
+  const login = key => fetch('/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key })
+  });
+
+  let reauthing = null;
+  function reauth(){                     // one in-flight attempt, shared by all callers
+    const k = getKey();
+    if(!k) return Promise.resolve(false);
+    if(!reauthing){
+      reauthing = login(k).then(r => r.ok).catch(() => false)
+        .finally(() => { reauthing = null; });
+    }
+    return reauthing;
+  }
+
+  // Every call goes through here, so an expired cookie is repaired once and the
+  // request retried; only a key the server rejects brings the gate back.
+  async function api(p, opt){
+    let r = await fetch(p, opt);
+    if(r.status === 401){
+      if(await reauth()) r = await fetch(p, opt);
+      if(r.status === 401) showLogin('That key is no longer valid — enter it again.');
+    }
+    return r;
+  }
+
+  function showLogin(msg){
+    $('#loginErr').textContent = msg || '';
+    const box = $('#login');
+    box.classList.add('open');
+    box.setAttribute('aria-hidden', 'false');
+    $('#loginKey').focus();
+  }
+  function hideLogin(){
+    const box = $('#login');
+    box.classList.remove('open');
+    box.setAttribute('aria-hidden', 'true');
+    $('#loginErr').textContent = '';
+  }
+
+  $('#loginForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const k = $('#loginKey').value.trim();
+    if(!k) return;
+    const btn = $('#loginBtn');
+    btn.disabled = true;
+    $('#loginErr').textContent = '';
+    let r = null;
+    try { r = await login(k); } catch(_) {}
+    btn.disabled = false;
+    if(!r || (!r.ok && r.status !== 401 && r.status !== 429)){
+      $('#loginErr').textContent = 'Could not reach the server.';
+      return;
+    }
+    if(r.status === 429){
+      $('#loginErr').textContent = 'Too many attempts — wait a few minutes, then try again.';
+      return;
+    }
+    if(!r.ok){
+      $('#loginErr').textContent = 'That key was not accepted.';
+      $('#loginKey').select();
+      return;
+    }
+    setKey(k);
+    $('#loginKey').value = '';
+    hideLogin();
+    boot();
+  });
+
+  $('#lockBtn').addEventListener('click', async () => {
+    setKey('');
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch(_) {}
+    location.reload();  // simplest way to drop every bit of loaded library state
+  });
 
   const PREFS_KEY = 'shelf.prefs';
   function loadPrefs(){ try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch(_) { return {}; } }
@@ -819,13 +932,31 @@
     es => { if(es.some(e => e.isIntersecting)) loadList(false); },
     { rootMargin: '600px' } // begin loading before the sentinel is on screen
   );
-  io.observe($('#sentinel'));
 
-  window.addEventListener('hashchange', applyRoute);
-  loadList(true);
-  applyRoute();
-  pollStatus();
-  setInterval(() => { if(!$('#reader').classList.contains('open')) pollStatus(); }, 15000);
+  // Nothing that touches the library runs until we're past the gate, so an
+  // unauthenticated visitor never sees a grid of failed requests.
+  let booted = false;
+  function boot(){
+    if(booted) return;
+    booted = true;
+    io.observe($('#sentinel'));
+    window.addEventListener('hashchange', applyRoute);
+    loadList(true);
+    applyRoute();
+    pollStatus();
+    setInterval(() => { if(!$('#reader').classList.contains('open')) pollStatus(); }, 15000);
+  }
+
+  (async function start(){
+    let st = null;
+    try { st = await (await fetch('/api/auth/status')).json(); } catch(_) {}
+    // No API_KEY on the server (or status unreachable): behave exactly as before.
+    // If we guessed wrong, the first 401 from api() puts the gate up anyway.
+    if(!st || !st.required){ boot(); return; }
+    $('#lockBtn').hidden = false;
+    if(st.authenticated || await reauth()) boot();
+    else showLogin();
+  })();
 </script>
 </body>
 </html>

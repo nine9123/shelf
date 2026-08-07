@@ -53,11 +53,24 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/id-report", a.handleIDReport)
 	mux.HandleFunc("GET /api/namespaces", a.handleNamespaces)
 	mux.HandleFunc("GET /api/tags", a.handleTagValues)
+	mux.HandleFunc("GET /api/auth/status", a.handleAuthStatus)
+	mux.HandleFunc("POST /api/auth/login", a.handleAuthLogin)
+	mux.HandleFunc("POST /api/auth/logout", a.handleAuthLogout)
 	mux.HandleFunc("GET /api/semantic", a.handleSemantic)
 	mux.HandleFunc("GET /api/semantic/status", a.handleSemanticStatus)
 	mux.HandleFunc("POST /api/semantic/reset", a.handleSemanticReset)
 	mux.HandleFunc("GET /", a.handleIndex)
-	return mux
+	return a.withAuth(mux)
+}
+
+// cacheScope keeps images out of shared caches once the library is private: an
+// authenticated response must not be stored by a proxy and handed to the next
+// visitor. Without a key nothing is private, so "public" still applies.
+func (a *App) cacheScope() string {
+	if a.cfg.APIKey != "" {
+		return "private"
+	}
+	return "public"
 }
 
 func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
@@ -284,7 +297,7 @@ func (a *App) handleCover(w http.ResponseWriter, r *http.Request) {
 	// URL is versioned (?v=coverVer), so cache hard; a changed cover is a new URL.
 	// ETag is a backstop for revalidation after expiry.
 	w.Header().Set("ETag", fmt.Sprintf(`"c%x-%x"`, info.ModTime().UnixNano(), info.Size()))
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Cache-Control", a.cacheScope()+", max-age=86400")
 	http.ServeFile(w, r, f)
 }
 
@@ -389,7 +402,7 @@ func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Cache-Control", a.cacheScope()+", max-age=86400")
 	io.Copy(w, rc)
 }
 
@@ -430,7 +443,7 @@ func (a *App) handleThumb(w http.ResponseWriter, r *http.Request) {
 	rc.Close()
 
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Cache-Control", a.cacheScope()+", max-age=86400")
 	var buf bytes.Buffer
 	if makeThumbTo(bytes.NewReader(raw), 240, &buf) == nil {
 		w.Header().Set("Content-Type", "image/jpeg")
