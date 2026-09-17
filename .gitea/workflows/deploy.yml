@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: 192.168.178.40:30008
+  REGISTRY: 192.168.1.40:30008
   IMAGE_NAME: nine9/shelf
   WATCHTOWER_SCOPE: shelf   # must match the watchtower.scope label on the app
 
