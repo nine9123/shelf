@@ -3,12 +3,16 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"container/list"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"path"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 var imageExts = map[string]bool{
@@ -139,20 +143,11 @@ func openZip(absPath string) (*pageArchive, error) {
 // modest archive sizes here; see the README for the in-memory-cache upgrade.
 
 func openLibarchive(absPath string) (*pageArchive, error) {
-	names, err := bsdtarList(absPath)
+	l, err := libarchiveListings.get(absPath, bsdtarList)
 	if err != nil {
 		return nil, err
 	}
-	var images []string
-	txtName := ""
-	for _, n := range names {
-		if isImageName(n) {
-			images = append(images, n)
-		} else if txtName == "" && strings.EqualFold(path.Ext(n), ".txt") {
-			txtName = n
-		}
-	}
-	sortNatural(images)
+	images, txtName := l.images, l.txtName
 	return &pageArchive{
 		images: images,
 		metaFn: func() string {
@@ -169,6 +164,92 @@ func openLibarchive(absPath string) (*pageArchive, error) {
 		},
 		openFn: func(n string) (io.ReadCloser, error) { return bsdtarExtract(absPath, n) },
 	}, nil
+}
+
+// archiveListing is the part of a bsdtar listing that openLibarchive needs.
+// images is shared between callers and must not be modified.
+type archiveListing struct {
+	images  []string
+	txtName string
+}
+
+func newArchiveListing(names []string) *archiveListing {
+	l := &archiveListing{}
+	for _, n := range names {
+		if isImageName(n) {
+			l.images = append(l.images, n)
+		} else if l.txtName == "" && strings.EqualFold(path.Ext(n), ".txt") {
+			l.txtName = n
+		}
+	}
+	sortNatural(l.images)
+	return l
+}
+
+// listingCache remembers recent bsdtar listings so serving a page costs one
+// pass over the archive (the extract) instead of two (list, then extract).
+// Entries are keyed by path and invalidated when the file's size or mtime
+// changes; failed listings are not cached. It is a small LRU: a reader only
+// touches a handful of archives at a time, and an index scan passing through
+// just cycles the oldest entries out.
+type listingCache struct {
+	mu    sync.Mutex
+	max   int
+	order *list.List // front = most recently used; values are *listingEntry
+	byKey map[string]*list.Element
+}
+
+type listingEntry struct {
+	path    string
+	modTime time.Time
+	size    int64
+	listing *archiveListing
+}
+
+var libarchiveListings = newListingCache(64)
+
+func newListingCache(max int) *listingCache {
+	return &listingCache{max: max, order: list.New(), byKey: map[string]*list.Element{}}
+}
+
+func (c *listingCache) get(absPath string, lister func(string) ([]string, error)) (*archiveListing, error) {
+	fi, err := os.Stat(absPath)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if el, ok := c.byKey[absPath]; ok {
+		e := el.Value.(*listingEntry)
+		if e.modTime.Equal(fi.ModTime()) && e.size == fi.Size() {
+			c.order.MoveToFront(el)
+			c.mu.Unlock()
+			return e.listing, nil
+		}
+		c.order.Remove(el)
+		delete(c.byKey, absPath)
+	}
+	c.mu.Unlock()
+
+	// List outside the lock; concurrent misses on one archive may both list,
+	// which is harmless and rarer than holding up every other page view.
+	names, err := lister(absPath)
+	if err != nil {
+		return nil, err
+	}
+	l := newArchiveListing(names)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.byKey[absPath]; ok {
+		c.order.Remove(el)
+	}
+	c.byKey[absPath] = c.order.PushFront(&listingEntry{absPath, fi.ModTime(), fi.Size(), l})
+	for c.order.Len() > c.max {
+		old := c.order.Back()
+		c.order.Remove(old)
+		delete(c.byKey, old.Value.(*listingEntry).path)
+	}
+	return l, nil
 }
 
 func bsdtarList(absPath string) ([]string, error) {

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image"
 	"io"
 	"log"
 	"net/http"
@@ -439,24 +442,38 @@ func (a *App) handleThumb(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read page", http.StatusInternalServerError)
 		return
 	}
-	raw, _ := io.ReadAll(io.LimitReader(rc, 48<<20)) // cap 48 MB per page
-	rc.Close()
+	defer func() { rc.Close() }()
 
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", a.cacheScope()+", max-age=86400")
+	// Decode straight from the entry stream rather than buffering the page.
+	// image.Decode sniffs the format by peeking, so if it's one we can't decode
+	// (e.g. AVIF/JXL) nothing has been consumed past br's buffer and the
+	// original can still be streamed from br.
+	br := bufio.NewReader(rc)
 	var buf bytes.Buffer
-	if makeThumbTo(bytes.NewReader(raw), 240, &buf) == nil {
+	err = makeThumbTo(br, 240, &buf)
+	if err == nil {
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Write(buf.Bytes())
 		return
 	}
-	// couldn't decode/resize (e.g. AVIF/JXL) — serve the original bytes instead
+	// couldn't decode/resize — serve the original bytes instead
+	if !errors.Is(err, image.ErrFormat) {
+		// the decoder consumed part of the stream before failing; start over
+		rc.Close()
+		if rc, err = arc.Open(imgs[n]); err != nil {
+			http.Error(w, "cannot read page", http.StatusInternalServerError)
+			return
+		}
+		br = bufio.NewReader(rc)
+	}
 	ct := ctByExt[strings.ToLower(path.Ext(imgs[n]))]
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", ct)
-	w.Write(raw)
+	io.Copy(w, br)
 }
 
 func (a *App) handleFavAdd(w http.ResponseWriter, r *http.Request) {
