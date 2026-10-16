@@ -439,24 +439,35 @@ func (a *App) handleThumb(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read page", http.StatusInternalServerError)
 		return
 	}
-	raw, _ := io.ReadAll(io.LimitReader(rc, 48<<20)) // cap 48 MB per page
+	// Decode straight from the entry stream; only the small JPEG is buffered,
+	// so nothing is written until we know which response we're sending.
+	var buf bytes.Buffer
+	thumbErr := makeThumbTo(io.LimitReader(rc, 48<<20), 240, &buf) // cap 48 MB per page
 	rc.Close()
 
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", a.cacheScope()+", max-age=86400")
-	var buf bytes.Buffer
-	if makeThumbTo(bytes.NewReader(raw), 240, &buf) == nil {
+	if thumbErr == nil {
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Write(buf.Bytes())
 		return
 	}
-	// couldn't decode/resize (e.g. AVIF/JXL) — serve the original bytes instead
+	// couldn't decode/resize (e.g. AVIF/JXL) — reopen the entry and stream the
+	// original instead, as the page endpoint does
+	rc, err = arc.Open(imgs[n])
+	if err != nil {
+		w.Header().Del("ETag")
+		w.Header().Del("Cache-Control")
+		http.Error(w, "cannot read page", http.StatusInternalServerError)
+		return
+	}
+	defer rc.Close()
 	ct := ctByExt[strings.ToLower(path.Ext(imgs[n]))]
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", ct)
-	w.Write(raw)
+	io.Copy(w, rc)
 }
 
 func (a *App) handleFavAdd(w http.ResponseWriter, r *http.Request) {
