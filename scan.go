@@ -150,14 +150,20 @@ func (a *App) Scan() {
 		}
 	}
 
-	// 4. prune rows whose files are gone, and drop their covers + tags
-	for rel := range known {
-		if _, ok := disk[rel]; !ok {
-			var id int64
-			a.index.QueryRow(`SELECT id FROM archives WHERE path = ?`, rel).Scan(&id)
-			a.index.Exec(`DELETE FROM tags WHERE archive_id = ?`, id)
-			a.index.Exec(`DELETE FROM archives WHERE path = ?`, rel)
-			os.Remove(a.coverPath(rel))
+	// 4. prune rows whose files are gone, and drop their covers + tags. One
+	//    transaction for the lot: a commit per statement is far slower.
+	if tx, err := a.index.Begin(); err == nil {
+		for rel := range known {
+			if _, ok := disk[rel]; !ok {
+				var id int64
+				tx.QueryRow(`SELECT id FROM archives WHERE path = ?`, rel).Scan(&id)
+				tx.Exec(`DELETE FROM tags WHERE archive_id = ?`, id)
+				tx.Exec(`DELETE FROM archives WHERE path = ?`, rel)
+				os.Remove(a.coverPath(rel))
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			log.Printf("scan: prune: %v", err)
 		}
 	}
 
@@ -190,7 +196,15 @@ func (a *App) writeResult(r result) {
 		status, errStr = "error", r.err.Error()
 		log.Printf("scan: index %s: %v", r.rel, r.err)
 	}
-	_, err := a.index.Exec(`
+	// The row and its tags are written in one transaction: atomic, and a single
+	// commit instead of one per statement (which dominated large scans).
+	tx, err := a.index.Begin()
+	if err != nil {
+		log.Printf("scan: write %s: %v", r.rel, err)
+		return
+	}
+	defer tx.Rollback() // no-op after a successful Commit
+	_, err = tx.Exec(`
 INSERT INTO archives (path, identity, title, size, mtime, page_count, meta, category, has_cover, status, error, indexed_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(path) DO UPDATE SET
@@ -207,12 +221,16 @@ ON CONFLICT(path) DO UPDATE SET
 	}
 	// Refresh this archive's tag rows (identity by path -> id).
 	var id int64
-	if a.index.QueryRow(`SELECT id FROM archives WHERE path = ?`, r.rel).Scan(&id) != nil {
+	if tx.QueryRow(`SELECT id FROM archives WHERE path = ?`, r.rel).Scan(&id) != nil {
+		tx.Commit() // keep the archive row even if the tag refresh can't run
 		return
 	}
-	a.index.Exec(`DELETE FROM tags WHERE archive_id = ?`, id)
+	tx.Exec(`DELETE FROM tags WHERE archive_id = ?`, id)
 	for _, t := range r.tags {
-		a.index.Exec(`INSERT INTO tags (archive_id, namespace, tag) VALUES (?, ?, ?)`, id, t.ns, t.val)
+		tx.Exec(`INSERT INTO tags (archive_id, namespace, tag) VALUES (?, ?, ?)`, id, t.ns, t.val)
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("scan: write %s: %v", r.rel, err)
 	}
 }
 

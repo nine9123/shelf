@@ -37,6 +37,22 @@ func TestNormalizeAndDot(t *testing.T) {
 	}
 }
 
+func TestNormalizeInPlaceMatchesNormalizeVec(t *testing.T) {
+	v := []float32{3, -4, 12}
+	want := normalizeVec(v)
+	normalizeInPlace(v)
+	for i := range v {
+		if v[i] != want[i] {
+			t.Fatalf("[%d] %v != %v", i, v[i], want[i])
+		}
+	}
+	z := []float32{0, 0}
+	normalizeInPlace(z) // zero vector is left alone, as normalizeVec does
+	if z[0] != 0 || z[1] != 0 {
+		t.Fatalf("zero vector changed: %v", z)
+	}
+}
+
 func TestSearchVecRanking(t *testing.T) {
 	s := &Semantic{pos: map[string]int{}}
 	s.addVec("a", []float32{1, 0, 0})

@@ -53,11 +53,13 @@ func (s *Semantic) LoadIndex() {
 	s.pos = map[string]int{}
 	for rows.Next() {
 		var id string
-		var b []byte
+		var b sql.RawBytes // decodeVec copies it, so skip the driver's own copy
 		if rows.Scan(&id, &b) == nil {
+			v := decodeVec(b)
+			normalizeInPlace(v) // v is ours; no second copy per vector
 			s.pos[id] = len(s.ids)
 			s.ids = append(s.ids, id)
-			s.vecs = append(s.vecs, normalizeVec(decodeVec(b)))
+			s.vecs = append(s.vecs, v)
 		}
 	}
 }
@@ -356,6 +358,21 @@ func normalizeVec(v []float32) []float32 {
 		out[i] = x * inv
 	}
 	return out
+}
+
+// normalizeInPlace scales v to unit length without allocating.
+func normalizeInPlace(v []float32) {
+	var s float64
+	for _, x := range v {
+		s += float64(x) * float64(x)
+	}
+	if s == 0 {
+		return
+	}
+	inv := float32(1 / math.Sqrt(s))
+	for i := range v {
+		v[i] *= inv
+	}
 }
 
 func dotVec(a, b []float32) float32 {

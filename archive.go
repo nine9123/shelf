@@ -50,15 +50,24 @@ func sortNatural(names []string) {
 // pageArchive is a uniform view of one archive's contents, independent of the
 // container format: the image page names in reading order, the first .txt as
 // metadata, and a way to open any single entry as a stream.
+//
+// The metadata is read lazily: only the indexer needs it, while serving a page
+// or thumbnail opens the archive too, and for bsdtar formats reading the .txt
+// costs an extra process and a pass over the archive.
 type pageArchive struct {
 	images  []string
-	meta    string
+	metaFn  func() string
 	openFn  func(name string) (io.ReadCloser, error)
 	closeFn func() error
 }
 
-func (p *pageArchive) Images() []string                        { return p.images }
-func (p *pageArchive) Meta() string                            { return p.meta }
+func (p *pageArchive) Images() []string { return p.images }
+func (p *pageArchive) Meta() string {
+	if p.metaFn == nil {
+		return ""
+	}
+	return p.metaFn()
+}
 func (p *pageArchive) Open(name string) (io.ReadCloser, error) { return p.openFn(name) }
 func (p *pageArchive) Close() error {
 	if p.closeFn != nil {
@@ -83,7 +92,7 @@ func openZip(absPath string) (*pageArchive, error) {
 	}
 	byName := make(map[string]*zip.File, len(zr.File))
 	var images []string
-	meta := ""
+	var metaFile *zip.File
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
@@ -91,18 +100,25 @@ func openZip(absPath string) (*pageArchive, error) {
 		byName[f.Name] = f
 		if isImageName(f.Name) {
 			images = append(images, f.Name)
-		} else if meta == "" && strings.EqualFold(path.Ext(f.Name), ".txt") {
-			if rc, e := f.Open(); e == nil {
-				b, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
-				rc.Close()
-				meta = string(b)
-			}
+		} else if metaFile == nil && strings.EqualFold(path.Ext(f.Name), ".txt") {
+			metaFile = f
 		}
 	}
 	sortNatural(images)
 	return &pageArchive{
 		images: images,
-		meta:   meta,
+		metaFn: func() string {
+			if metaFile == nil {
+				return ""
+			}
+			rc, err := metaFile.Open()
+			if err != nil {
+				return ""
+			}
+			defer rc.Close()
+			b, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
+			return string(b)
+		},
 		openFn: func(n string) (io.ReadCloser, error) {
 			f, ok := byName[n]
 			if !ok {
@@ -137,17 +153,20 @@ func openLibarchive(absPath string) (*pageArchive, error) {
 		}
 	}
 	sortNatural(images)
-	meta := ""
-	if txtName != "" {
-		if rc, e := bsdtarExtract(absPath, txtName); e == nil {
-			b, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
-			rc.Close()
-			meta = string(b)
-		}
-	}
 	return &pageArchive{
 		images: images,
-		meta:   meta,
+		metaFn: func() string {
+			if txtName == "" {
+				return ""
+			}
+			rc, err := bsdtarExtract(absPath, txtName)
+			if err != nil {
+				return ""
+			}
+			defer rc.Close()
+			b, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
+			return string(b)
+		},
 		openFn: func(n string) (io.ReadCloser, error) { return bsdtarExtract(absPath, n) },
 	}, nil
 }
