@@ -49,6 +49,7 @@ func scaleWidth(src image.Image, targetW int) image.Image {
 		targetH = 1
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, targetW, targetH))
+	at := pixelSampler(src)
 	xr := float64(sw) / float64(targetW)
 	yr := float64(sh) / float64(targetH)
 	for y := 0; y < targetH; y++ {
@@ -59,10 +60,10 @@ func scaleWidth(src image.Image, targetW int) image.Image {
 			fx := (float64(x)+0.5)*xr - 0.5
 			x0 := int(fx)
 			wx := fx - float64(x0)
-			r00, g00, b00 := sample(src, b, x0, y0)
-			r10, g10, b10 := sample(src, b, x0+1, y0)
-			r01, g01, b01 := sample(src, b, x0, y0+1)
-			r11, g11, b11 := sample(src, b, x0+1, y0+1)
+			r00, g00, b00 := sample(at, b, x0, y0)
+			r10, g10, b10 := sample(at, b, x0+1, y0)
+			r01, g01, b01 := sample(at, b, x0, y0+1)
+			r11, g11, b11 := sample(at, b, x0+1, y0+1)
 			i := dst.PixOffset(x, y)
 			dst.Pix[i+0] = clamp8(bilerp(r00, r10, r01, r11, wx, wy))
 			dst.Pix[i+1] = clamp8(bilerp(g00, g10, g01, g11, wx, wy))
@@ -73,7 +74,25 @@ func scaleWidth(src image.Image, targetW int) image.Image {
 	return dst
 }
 
-func sample(img image.Image, b image.Rectangle, x, y int) (float64, float64, float64) {
+// pixelSampler returns a function equivalent to img.At(x, y).RGBA(), but for the
+// concrete types the decoders actually produce it reads the pixel without
+// boxing a color.Color per call. The generic At path allocates on every sample
+// (four per output pixel), which dominated thumbnailing time and GC churn.
+func pixelSampler(img image.Image) func(x, y int) (r, g, b, a uint32) {
+	switch m := img.(type) {
+	case *image.YCbCr: // JPEG
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return m.YCbCrAt(x, y).RGBA() }
+	case *image.RGBA:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return m.RGBAAt(x, y).RGBA() }
+	case *image.NRGBA: // PNG, WebP (lossless/alpha)
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return m.NRGBAAt(x, y).RGBA() }
+	case *image.Gray:
+		return func(x, y int) (uint32, uint32, uint32, uint32) { return m.GrayAt(x, y).RGBA() }
+	}
+	return func(x, y int) (uint32, uint32, uint32, uint32) { return img.At(x, y).RGBA() }
+}
+
+func sample(at func(x, y int) (r, g, b, a uint32), b image.Rectangle, x, y int) (float64, float64, float64) {
 	if x < 0 {
 		x = 0
 	}
@@ -86,7 +105,7 @@ func sample(img image.Image, b image.Rectangle, x, y int) (float64, float64, flo
 	if y > b.Dy()-1 {
 		y = b.Dy() - 1
 	}
-	r, g, bb, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
+	r, g, bb, _ := at(b.Min.X+x, b.Min.Y+y)
 	return float64(r >> 8), float64(g >> 8), float64(bb >> 8)
 }
 
