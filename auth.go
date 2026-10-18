@@ -29,9 +29,11 @@ const (
 )
 
 // publicPaths are reachable without a key: the HTML shell (it holds no library
-// data, and the login form has to render somewhere) and the auth endpoints.
+// data, and the login form has to render somewhere), the auth endpoints, and
+// the readiness check (orchestrators send no key).
 var publicPaths = map[string]bool{
 	"/":                true,
+	"/healthz":         true,
 	"/api/auth/status": true,
 	"/api/auth/login":  true,
 	"/api/auth/logout": true,

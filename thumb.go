@@ -8,6 +8,7 @@ import (
 	_ "image/png"
 	"io"
 	"os"
+	"path/filepath"
 
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/webp"
@@ -15,7 +16,9 @@ import (
 
 // makeThumb decodes an image, scales it to width w (preserving aspect ratio,
 // never upscaling), and writes JPEG to dst. The file is written only on success,
-// so a decode failure never leaves an empty cover behind.
+// so a decode failure never leaves an empty cover behind, and it is written to a
+// temp file and renamed into place, so a crash or SIGKILL mid-write never leaves
+// a truncated cover that later gets served as valid.
 //
 // This uses a hand-rolled bilinear filter so the build stays pure stdlib with
 // no cgo image libraries. It is fine for a first pass; for a full 2 TB library
@@ -26,7 +29,31 @@ func makeThumb(r io.Reader, w int, dst string) error {
 	if err := makeThumbTo(r, w, &buf); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, buf.Bytes(), 0o644)
+	return writeFileAtomic(dst, buf.Bytes(), 0o644)
+}
+
+// writeFileAtomic writes data to a temp file next to dst and renames it over
+// dst. Temp names match ".*.tmp" so sweepTempCovers can clear leftovers.
+func writeFileAtomic(dst string, data []byte, perm os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(perm)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, dst)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }
 
 // makeThumbTo decodes, scales to width w, and writes JPEG to out.

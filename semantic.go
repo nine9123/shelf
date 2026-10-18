@@ -26,6 +26,7 @@ type Semantic struct {
 	index *sql.DB
 	user  *sql.DB
 	ol    *Ollama
+	ctx   context.Context // cancelled at shutdown; nil means never
 
 	mu   sync.RWMutex
 	ids  []string      // identities, parallel to vecs
@@ -37,6 +38,25 @@ type Semantic struct {
 }
 
 func (s *Semantic) enabled() bool { return s != nil && s.ol != nil }
+
+func (s *Semantic) context() context.Context {
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
+}
+
+// sleep waits d, or returns false early if the app is shutting down.
+func (s *Semantic) sleep(d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-s.context().Done():
+		return false
+	}
+}
 
 // LoadIndex reads all stored embeddings into memory at startup.
 func (s *Semantic) LoadIndex() {
@@ -123,50 +143,73 @@ func (s *Semantic) reset() {
 
 // Run is the background worker. It captions covers and embeds descriptions,
 // low-priority and incrementally, so search works over whatever's done so far.
+// Ollama being down or still starting never ends the worker: it backs off and
+// retries, and items whose calls failed stay pending.
 func (s *Semantic) Run() {
 	if !s.enabled() {
 		return
 	}
-	for {
-		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx := s.context()
+	backoff := time.Duration(0)
+	for ctx.Err() == nil {
+		rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
 		ok := s.ol.Reachable(rctx)
 		rcancel()
 		if !ok {
 			s.lastErr.Store("Ollama not reachable at " + s.cfg.OllamaURL)
-			time.Sleep(30 * time.Second)
+			s.sleep(30 * time.Second)
 			continue
 		}
 		// Require the vision model to be present, so a missing model stalls with a
 		// clear message rather than silently producing caption-less embeddings.
 		if s.cfg.VisionModel != "" {
-			vctx, vcancel := context.WithTimeout(context.Background(), 5*time.Second)
+			vctx, vcancel := context.WithTimeout(ctx, 5*time.Second)
 			has := s.ol.HasModel(vctx, s.cfg.VisionModel)
 			vcancel()
 			if !has {
 				s.lastErr.Store("vision model \"" + s.cfg.VisionModel + "\" not found — run: ollama pull " + s.cfg.VisionModel)
-				time.Sleep(30 * time.Second)
+				s.sleep(30 * time.Second)
 				continue
 			}
 		}
 		batch := s.nextBatch(16)
 		if len(batch) == 0 {
-			time.Sleep(60 * time.Second) // nothing pending; poll for newly-added archives
+			s.sleep(60 * time.Second) // nothing pending; poll for newly-added archives
 			continue
 		}
 		s.working.Store(true)
 		for _, c := range batch {
+			if ctx.Err() != nil {
+				break
+			}
 			if err := s.processOne(c); err != nil {
+				if ctx.Err() != nil {
+					break // cancelled by shutdown, not a real failure
+				}
 				s.lastErr.Store(err.Error())
-				time.Sleep(5 * time.Second)
+				backoff = nextBackoff(backoff)
+				s.sleep(backoff)
 			} else {
 				s.lastErr.Store("")
+				backoff = 0
 			}
 			if s.cfg.SemanticDelay > 0 {
-				time.Sleep(s.cfg.SemanticDelay)
+				s.sleep(s.cfg.SemanticDelay)
 			}
 		}
 		s.working.Store(false)
 	}
+}
+
+// nextBackoff doubles the retry delay: 1s, 2s, 4s, ... capped at 30s.
+func nextBackoff(d time.Duration) time.Duration {
+	if d <= 0 {
+		return time.Second
+	}
+	if d *= 2; d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
 }
 
 type candidate struct {
@@ -230,12 +273,15 @@ func (s *Semantic) nextBatch(limit int) []candidate {
 }
 
 func (s *Semantic) processOne(c candidate) error {
-	caption := s.captionCover(c.path)
+	caption, err := s.captionCover(c.path)
+	if err != nil {
+		return err // Ollama unavailable: don't store a caption-less result, retry later
+	}
 	title, category, meta, tags := s.archiveText(c.id)
 	text := buildDescription(caption, cleanNameGo(title), category, tags, meta)
 
 	vec, err := func() ([]float32, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(s.context(), 60*time.Second)
 		defer cancel()
 		return s.ol.Embed(ctx, text)
 	}()
@@ -254,21 +300,23 @@ ON CONFLICT(identity) DO UPDATE SET model=excluded.model, dim=excluded.dim, vec=
 }
 
 // captionCover opens the archive's first page and asks the vision model to
-// describe it. Returns "" on any failure (embedding still proceeds on metadata).
-func (s *Semantic) captionCover(relPath string) string {
+// describe it. Returns "" when this archive can't be captioned (embedding still
+// proceeds on metadata), and an error only when Ollama itself was unavailable,
+// so the caller retries instead of storing a caption-less result for good.
+func (s *Semantic) captionCover(relPath string) (string, error) {
 	abs := filepath.Join(s.cfg.RootDir, filepath.FromSlash(relPath))
 	arc, err := openArchive(abs)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	defer arc.Close()
 	imgs := arc.Images()
 	if len(imgs) == 0 {
-		return ""
+		return "", nil
 	}
 	rc, err := arc.Open(imgs[0])
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	raw, _ := io.ReadAll(io.LimitReader(rc, 32<<20))
 	rc.Close()
@@ -277,15 +325,18 @@ func (s *Semantic) captionCover(relPath string) string {
 	// decode it (e.g. AVIF/JXL), skip the caption and embed on metadata alone.
 	var jpg bytes.Buffer
 	if makeThumbTo(bytes.NewReader(raw), 1024, &jpg) != nil {
-		return ""
+		return "", nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(s.context(), 4*time.Minute)
 	defer cancel()
 	cap, err := s.ol.Caption(ctx, jpg.Bytes(), captionPrompt)
 	if err != nil {
-		return ""
+		if unavailable(err) {
+			return "", err
+		}
+		return "", nil
 	}
-	return cap
+	return cap, nil
 }
 
 func (s *Semantic) archiveText(id int64) (title, category, meta string, tags []string) {

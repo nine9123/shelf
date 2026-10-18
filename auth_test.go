@@ -59,6 +59,7 @@ func TestWithAuthGate(t *testing.T) {
 		// The HTML shell has to render for the login form to exist.
 		{"index is public", "/", nil, http.StatusOK, true},
 		{"auth status is public", "/api/auth/status", nil, http.StatusOK, true},
+		{"healthz is public", "/healthz", nil, http.StatusOK, true},
 		{"cover is gated", "/api/archives/1/cover", nil, http.StatusUnauthorized, false},
 		{"page is gated", "/api/archives/1/page/0", nil, http.StatusUnauthorized, false},
 	}

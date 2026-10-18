@@ -123,6 +123,7 @@ ROOT_DIR=/path/to/archives CACHE_DIR=/tmp/shelf-cache go run .
 | GET | `/api/auth/status` | `{required, authenticated}` — public |
 | POST | `/api/auth/login` | Exchange `{ "key": "…" }` for a session cookie — public |
 | POST | `/api/auth/logout` | Clear the session cookie — public |
+| GET | `/healthz` | Readiness check, `200` once the app can serve — public |
 
 `id` is the cache row id (fine within a session). Favorites/progress are stored
 by **identity** (the leading `#id`), so they follow a file across moves, renames,
@@ -243,6 +244,27 @@ These are Docker-only (used by Compose and the entrypoint, not the binary):
 | `LIBRARY_PATH` | — (required) | Host archive folder → mounted at `ROOT_DIR` |
 | `CACHE_PATH` | `./cache` | Host cache folder → mounted at `CACHE_DIR` |
 | `PUID` / `PGID` | `1000` | User/group the server runs as |
+
+## Running behind idlegate (start/stop on demand)
+
+Shelf can be stopped while idle and started on the next request:
+
+- **Clean stop.** On SIGTERM (or Ctrl-C) it stops scanning, drains HTTP
+  connections, closes the databases, and exits **0** within about 4 s, inside
+  `docker stop`'s 10 s grace. The logs show `received terminated, shutting down`
+  and `shutdown complete`.
+- **Readiness.** The port opens only after the databases are open, and
+  `GET /healthz` needs no key, so point the route at it:
+  `health=/healthz` (not `/api/status`, which answers 401 when `API_KEY` is set).
+- **Interrupted scans resume.** Archives not yet written to the index stay
+  un-indexed and are redone by the next scan, which runs at every start (interval
+  scans don't fire while stopped). Covers are written to a temp file and renamed,
+  so even a SIGKILL never leaves a truncated cover.
+- **Ollama down.** The semantic worker retries with backoff (1 s … 30 s) and
+  never stores a caption-less description because Ollama was unreachable.
+
+A first full index of a large library won't finish if it is stopped every idle
+period; stop the gate (`docker stop idlegate`) until that first scan is done.
 
 ## Resetting the cache
 

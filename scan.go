@@ -79,11 +79,19 @@ func (a *App) coverPath(rel string) string {
 
 // Scan walks the library, diffs it against the index, and processes only new or
 // changed archives. It is safe to run repeatedly; removed files are pruned.
+//
+// A scan can be cut off at any point (the app is stopped while idle, mid-scan
+// or not). It then stops collecting results and returns; anything not yet
+// written stays un-indexed and is picked up by the next scan.
 func (a *App) Scan() {
 	if !a.scanning.CompareAndSwap(false, true) {
 		return // a scan is already running
 	}
 	defer a.scanning.Store(false)
+	ctx := a.context()
+	if ctx.Err() != nil {
+		return // shutting down
+	}
 	start := time.Now()
 
 	// 1. current state on disk, keyed by slash-normalized relative path
@@ -94,6 +102,9 @@ func (a *App) Scan() {
 	}
 	disk := map[string]fsEntry{}
 	filepath.WalkDir(a.cfg.RootDir, func(p string, d os.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -111,6 +122,12 @@ func (a *App) Scan() {
 		disk[filepath.ToSlash(rel)] = fsEntry{abs: p, size: info.Size(), mt: info.ModTime().Unix()}
 		return nil
 	})
+	// An interrupted walk saw only part of the library; pruning against it
+	// would delete rows (and covers) for files that are still there.
+	if ctx.Err() != nil {
+		log.Printf("scan: interrupted while walking the library")
+		return
+	}
 
 	// 2. known state in the index
 	type dbEntry struct {
@@ -172,11 +189,22 @@ func (a *App) Scan() {
 	// 5. feed jobs to the pool and collect results here (single writer)
 	go func() {
 		for _, j := range todo {
-			a.jobs <- j
+			select {
+			case a.jobs <- j:
+			case <-ctx.Done():
+				return // stop handing out work
+			}
 		}
 	}()
 	for i := 0; i < len(todo); i++ {
-		a.writeResult(<-a.results)
+		select {
+		case r := <-a.results:
+			a.writeResult(r)
+		case <-ctx.Done():
+			// In-flight jobs are abandoned, not committed; they're redone next time.
+			log.Printf("scan: interrupted after %d of %d; the rest resumes on the next scan", i, len(todo))
+			return
+		}
 	}
 
 	a.lastScan.Store(time.Now().Unix())
@@ -243,13 +271,23 @@ func b2i(b bool) int {
 
 // scanLoop runs one scan at startup, then re-scans on the configured interval.
 // Set SCAN_INTERVAL=0 to scan once and rely on the manual POST /api/scan.
+//
+// The boot scan is also the catch-up: interval scans don't fire while the app
+// is stopped (e.g. put to sleep by idlegate), so every start begins with one.
 func (a *App) scanLoop() {
 	a.Scan()
 	if a.cfg.ScanInterval <= 0 {
 		return
 	}
+	ctx := a.context()
 	t := time.NewTicker(a.cfg.ScanInterval)
-	for range t.C {
-		a.Scan()
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			a.Scan()
+		case <-ctx.Done():
+			return
+		}
 	}
 }

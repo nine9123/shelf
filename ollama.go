@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -134,7 +135,32 @@ func (o *Ollama) post(ctx context.Context, path string, body any, out any) error
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("ollama %s: %s: %s", path, resp.Status, strings.TrimSpace(string(msg)))
+		return &statusError{code: resp.StatusCode,
+			msg: fmt.Sprintf("ollama %s: %s: %s", path, resp.Status, strings.TrimSpace(string(msg)))}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// statusError is a non-200 answer from Ollama.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
+// unavailable reports whether err means Ollama couldn't be asked at all
+// (connection refused, timeout, cancelled, gateway/starting-up status), as
+// opposed to Ollama answering with an error about this particular input. Only
+// the latter may be recorded as a result; the former must be retried later.
+func unavailable(err error) bool {
+	var se *statusError
+	if !errors.As(err, &se) {
+		return true // no HTTP answer: transport error, timeout or cancellation
+	}
+	switch se.code {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
 }
