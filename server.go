@@ -59,8 +59,18 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/semantic", a.handleSemantic)
 	mux.HandleFunc("GET /api/semantic/status", a.handleSemanticStatus)
 	mux.HandleFunc("POST /api/semantic/reset", a.handleSemanticReset)
+	mux.HandleFunc("GET /healthz", a.handleHealthz)
 	mux.HandleFunc("GET /", a.handleIndex)
 	return a.withAuth(mux)
+}
+
+// handleHealthz is the readiness check for orchestrators (idlegate's
+// health=/healthz, Docker healthchecks). It needs no key and does no work: the
+// port only opens once the databases are open and migrated, so any answer means
+// the UI can be served. It does not wait for the background scan.
+func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // cacheScope keeps images out of shared caches once the library is private: an
