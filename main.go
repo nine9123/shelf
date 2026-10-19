@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-//go:embed web/index.html
+//go:embed web/index.html web/favicon.svg web/favicon.ico web/apple-touch-icon.png
 var webFS embed.FS
 
 // App holds the shared state: config, the two databases, the work channels, and

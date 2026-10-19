@@ -29,14 +29,17 @@ const (
 )
 
 // publicPaths are reachable without a key: the HTML shell (it holds no library
-// data, and the login form has to render somewhere), the auth endpoints, and
-// the readiness check (orchestrators send no key).
+// data, and the login form has to render somewhere), its icons, the auth
+// endpoints, and the readiness check (orchestrators send no key).
 var publicPaths = map[string]bool{
-	"/":                true,
-	"/healthz":         true,
-	"/api/auth/status": true,
-	"/api/auth/login":  true,
-	"/api/auth/logout": true,
+	"/":                     true,
+	"/favicon.svg":          true,
+	"/favicon.ico":          true,
+	"/apple-touch-icon.png": true,
+	"/healthz":              true,
+	"/api/auth/status":      true,
+	"/api/auth/login":       true,
+	"/api/auth/logout":      true,
 }
 
 // withAuth gates everything except publicPaths. With no API_KEY configured it

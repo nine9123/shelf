@@ -60,6 +60,9 @@ func TestWithAuthGate(t *testing.T) {
 		{"index is public", "/", nil, http.StatusOK, true},
 		{"auth status is public", "/api/auth/status", nil, http.StatusOK, true},
 		{"healthz is public", "/healthz", nil, http.StatusOK, true},
+		{"favicon is public", "/favicon.svg", nil, http.StatusOK, true},
+		{"favicon.ico is public", "/favicon.ico", nil, http.StatusOK, true},
+		{"apple touch icon is public", "/apple-touch-icon.png", nil, http.StatusOK, true},
 		{"cover is gated", "/api/archives/1/cover", nil, http.StatusUnauthorized, false},
 		{"page is gated", "/api/archives/1/page/0", nil, http.StatusUnauthorized, false},
 	}
@@ -222,4 +225,22 @@ func boolStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// The browser fetches icons without credentials, including on the login page,
+// so they must come back through the real router even with a key configured.
+func TestIconsServedWithoutKey(t *testing.T) {
+	h := testApp(testKey).routes()
+	for path, ctype := range map[string]string{
+		"/favicon.svg":          "image/svg+xml",
+		"/favicon.ico":          "image/x-icon",
+		"/apple-touch-icon.png": "image/png",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != ctype || rec.Body.Len() == 0 {
+			t.Errorf("%s: code=%d type=%q len=%d, want 200 %q non-empty",
+				path, rec.Code, rec.Header().Get("Content-Type"), rec.Body.Len(), ctype)
+		}
+	}
 }
