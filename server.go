@@ -60,6 +60,9 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/semantic/status", a.handleSemanticStatus)
 	mux.HandleFunc("POST /api/semantic/reset", a.handleSemanticReset)
 	mux.HandleFunc("GET /healthz", a.handleHealthz)
+	mux.HandleFunc("GET /favicon.svg", handleAsset("web/favicon.svg", "image/svg+xml"))
+	mux.HandleFunc("GET /favicon.ico", handleAsset("web/favicon.ico", "image/x-icon"))
+	mux.HandleFunc("GET /apple-touch-icon.png", handleAsset("web/apple-touch-icon.png", "image/png"))
 	mux.HandleFunc("GET /", a.handleIndex)
 	return a.withAuth(mux)
 }
@@ -660,6 +663,21 @@ func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(data)
+}
+
+// handleAsset serves a static file from the embedded web/ directory. Icons
+// only change with a new binary, so let browsers keep them for a day.
+func handleAsset(name, contentType string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		data, err := webFS.ReadFile(name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(data)
+	}
 }
 
 // --- helpers ---
