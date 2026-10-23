@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testKey = "s3cret-key-with spaces,and;punctuation"
@@ -32,7 +35,7 @@ func TestWithAuthDisabledLetsEverythingThrough(t *testing.T) {
 }
 
 func TestWithAuthGate(t *testing.T) {
-	cookie := &http.Cookie{Name: sessionCookie, Value: encodeCookieValue(testKey)}
+	cookie := &http.Cookie{Name: sessionCookie, Value: testApp(testKey).newSession(time.Now())}
 	tests := []struct {
 		name   string
 		path   string
@@ -55,6 +58,12 @@ func TestWithAuthGate(t *testing.T) {
 			func(r *http.Request) { r.AddCookie(cookie) }, http.StatusOK, true},
 		{"garbage cookie", "/api/archives",
 			func(r *http.Request) { r.AddCookie(&http.Cookie{Name: sessionCookie, Value: "!!!"}) },
+			http.StatusUnauthorized, false},
+		// What older versions stored: the key itself, base64'd. No longer a session.
+		{"legacy key cookie", "/api/archives",
+			func(r *http.Request) {
+				r.AddCookie(&http.Cookie{Name: sessionCookie, Value: base64.RawURLEncoding.EncodeToString([]byte(testKey))})
+			},
 			http.StatusUnauthorized, false},
 		// The HTML shell has to render for the login form to exist.
 		{"index is public", "/", nil, http.StatusOK, true},
@@ -104,8 +113,14 @@ func TestLoginSetsUsableCookie(t *testing.T) {
 	if cookies[0].Secure {
 		t.Error("session cookie should not be Secure over plain HTTP — the browser would drop it")
 	}
-	// The key contains characters net/http strips from raw cookie values; the
-	// round trip only survives because it's encoded.
+	if cookies[0].SameSite != http.SameSiteLaxMode {
+		t.Errorf("SameSite = %v, want Lax", cookies[0].SameSite)
+	}
+	// A stolen cookie must not hand over the key itself.
+	if v := cookies[0].Value; strings.Contains(v, testKey) ||
+		strings.Contains(v, base64.RawURLEncoding.EncodeToString([]byte(testKey))) {
+		t.Fatalf("cookie value %q carries the key", v)
+	}
 	var reached bool
 	r := httptest.NewRequest("GET", "/api/archives", nil)
 	r.AddCookie(cookies[0])
@@ -242,5 +257,183 @@ func TestIconsServedWithoutKey(t *testing.T) {
 			t.Errorf("%s: code=%d type=%q len=%d, want 200 %q non-empty",
 				path, rec.Code, rec.Header().Get("Content-Type"), rec.Body.Len(), ctype)
 		}
+	}
+}
+
+func TestSessionToken(t *testing.T) {
+	a := testApp(testKey)
+	now := time.Now()
+	tok := a.newSession(now)
+	if !a.checkSession(tok, now) {
+		t.Fatal("fresh token rejected")
+	}
+	if a.checkSession(tok, now.Add(sessionMaxAge+time.Second)) {
+		t.Error("expired token accepted")
+	}
+	if testApp("a-different-key").checkSession(tok, now) {
+		t.Error("token survived a key rotation")
+	}
+	// Pushing the expiry out without re-signing must not work.
+	exp, sig, _ := strings.Cut(strings.TrimPrefix(tok, sessionTokenPrefix), ".")
+	n, _ := strconv.ParseInt(exp, 10, 64)
+	if a.checkSession(sessionTokenPrefix+strconv.FormatInt(n+1e6, 10)+"."+sig, now) {
+		t.Error("token with edited expiry accepted")
+	}
+	for _, bad := range []string{"", "v1.", "v1.123", "v1.abc.def", tok[:len(tok)-2], "v2" + tok[2:]} {
+		if a.checkSession(bad, now) {
+			t.Errorf("malformed token %q accepted", bad)
+		}
+	}
+}
+
+// Guessing through X-API-Key on any endpoint must be throttled like the login
+// form, or the login limit is meaningless.
+func TestHeaderGuessesAreThrottled(t *testing.T) {
+	a := testApp(testKey)
+	var reached bool
+	h := guarded(a, &reached)
+	get := func(key string) int {
+		r := httptest.NewRequest("GET", "/api/archives", nil)
+		r.RemoteAddr = "192.0.2.9:1234"
+		r.Header.Set("X-API-Key", key)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec.Code
+	}
+	for i := 0; i < loginMaxFails; i++ {
+		if code := get("wrong"); code != http.StatusUnauthorized {
+			t.Fatalf("guess %d: code = %d, want 401", i, code)
+		}
+	}
+	if code := get(testKey); code != http.StatusTooManyRequests {
+		t.Fatalf("correct key after %d bad guesses: code = %d, want 429", loginMaxFails, code)
+	}
+	// The block is shared with the login form.
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"key":"`+testKey+`"}`))
+	r.RemoteAddr = "192.0.2.9:5678"
+	a.handleAuthLogin(rec, r)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("login after header guesses: code = %d, want 429", rec.Code)
+	}
+}
+
+// The public status probe must not be a side door for guessing either.
+func TestStatusProbeGuessesAreThrottled(t *testing.T) {
+	a := testApp(testKey)
+	probe := func(key string) string {
+		r := httptest.NewRequest("GET", "/api/auth/status", nil)
+		r.RemoteAddr = "192.0.2.11:1234"
+		r.Header.Set("X-API-Key", key)
+		rec := httptest.NewRecorder()
+		a.handleAuthStatus(rec, r)
+		return rec.Body.String()
+	}
+	for i := 0; i < loginMaxFails; i++ {
+		probe("wrong")
+	}
+	if body := probe(testKey); !strings.Contains(body, `"authenticated":false`) {
+		t.Fatalf("correct key accepted after %d bad guesses: %s", loginMaxFails, body)
+	}
+}
+
+// A browser with a stale cookie fires a burst of failing image requests; that
+// must not lock its owner out of logging in again.
+func TestStaleCookiesDoNotThrottle(t *testing.T) {
+	a := testApp(testKey)
+	var reached bool
+	h := guarded(a, &reached)
+	stale := testApp("old-key").newSession(time.Now())
+	for i := 0; i < loginMaxFails*3; i++ {
+		r := httptest.NewRequest("GET", "/api/archives/1/cover", nil)
+		r.RemoteAddr = "192.0.2.10:1234"
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: stale})
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"key":"`+testKey+`"}`))
+	r.RemoteAddr = "192.0.2.10:1234"
+	a.handleAuthLogin(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login after stale-cookie burst: code = %d, want 200", rec.Code)
+	}
+}
+
+func TestCrossOriginWritesRefused(t *testing.T) {
+	tok := testApp(testKey).newSession(time.Now())
+	tests := []struct {
+		name   string
+		method string
+		hdr    map[string]string
+		want   int
+	}{
+		{"same-origin POST", "POST", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusOK},
+		{"cross-site POST", "POST", map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		// Another port on the same host is same-site, so Lax alone lets the cookie through.
+		{"same-site PUT", "PUT", map[string]string{"Sec-Fetch-Site": "same-site"}, http.StatusForbidden},
+		{"cross-site GET is a read", "GET", map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusOK},
+		{"matching Origin, no fetch metadata", "POST", map[string]string{"Origin": "http://shelf.test"}, http.StatusOK},
+		{"foreign Origin, no fetch metadata", "DELETE", map[string]string{"Origin": "http://nas.test:8081"}, http.StatusForbidden},
+		{"proxy-forwarded host", "POST",
+			map[string]string{"Origin": "https://books.example", "X-Forwarded-Host": "books.example"}, http.StatusOK},
+		{"no browser headers (curl)", "POST", nil, http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testApp(testKey)
+			var reached bool
+			r := httptest.NewRequest(tc.method, "http://shelf.test/api/scan", nil)
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: tok})
+			for k, v := range tc.hdr {
+				r.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			guarded(a, &reached).ServeHTTP(rec, r)
+			if rec.Code != tc.want || reached != (tc.want == http.StatusOK) {
+				t.Fatalf("code = %d reached = %v, want %d", rec.Code, reached, tc.want)
+			}
+		})
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	var reached bool
+	rec := httptest.NewRecorder()
+	guarded(testApp(testKey), &reached).ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	for k, v := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "same-origin",
+	} {
+		if got := rec.Header().Get(k); got != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
+		}
+	}
+}
+
+func TestClientIPBucketsIPv6By64(t *testing.T) {
+	ip := func(addr string) string {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = addr
+		return clientIP(r)
+	}
+	if a, b := ip("[2001:db8:1:2::1]:1"), ip("[2001:db8:1:2:ffff::9]:2"); a != b {
+		t.Errorf("same /64 bucketed apart: %q vs %q", a, b)
+	}
+	if a, b := ip("[2001:db8:1:2::1]:1"), ip("[2001:db8:1:3::1]:1"); a == b {
+		t.Errorf("different /64s share a bucket: %q", a)
+	}
+	if got := ip("192.0.2.1:80"); got != "192.0.2.1" {
+		t.Errorf("IPv4 = %q, want 192.0.2.1", got)
+	}
+}
+
+func TestLoginLimiterIsBounded(t *testing.T) {
+	l := newLoginLimiter()
+	for i := 0; i < loginMaxIPs*2; i++ {
+		l.fail("10.0." + strconv.Itoa(i/256) + "." + strconv.Itoa(i%256))
+	}
+	if n := len(l.fails); n > loginMaxIPs {
+		t.Fatalf("limiter holds %d entries, cap is %d", n, loginMaxIPs)
 	}
 }

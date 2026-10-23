@@ -12,6 +12,18 @@ worth building out next. It is a single small Go binary. Zip needs nothing else;
 the other formats are read through `bsdtar` (libarchive), which the Docker image
 installs for you.
 
+![The library grid: covers, titles, page counts and categories](docs/screenshots/library.png)
+
+| Detail view: tags, page grid, resume | Two-page reader, right-to-left |
+|---|---|
+| ![Detail view](docs/screenshots/detail.png) | ![Reader](docs/screenshots/reader.png) |
+
+| Login gate (when `API_KEY` is set) | Phone |
+|---|---|
+| ![Login page](docs/screenshots/login.png) | ![Library on a phone-sized screen](docs/screenshots/mobile.png) |
+
+<sub>Screenshots use a generated demo library, not real archives.</sub>
+
 ## Core idea
 
 There are three kinds of data, and they are kept strictly separate:
@@ -103,6 +115,61 @@ ROOT_DIR=/path/to/archives CACHE_DIR=/tmp/shelf-cache go run .
    no file-watcher on purpose: over SMB/NAS mounts filesystem events aren't
    reliable, so polling + a manual trigger is the robust choice.
 
+## Benchmarks
+
+Shelf is meant to sit on a NAS next to everything else, so the numbers that
+matter are what it costs while it's running — mostly while nobody is using it.
+
+Measured on a library of **1,000 `.cbz` archives, 24 pages each (24,000 pages,
+1.8 GB)**, with `WORKER_CONCURRENCY=4` (the Compose default), auth off,
+semantic search off. CPU is the process's own user+system time from
+`/proc/<pid>/stat` divided by wall time (100% = one core fully busy); memory is
+resident set size (`VmRSS`), sampled every 250 ms.
+
+| Phase | Time | CPU | RSS (avg / peak) |
+|-------|------|-----|------------------|
+| Start → `/healthz` answers | 22 ms | — | 13 MB |
+| First full scan (index + 1,000 covers) | 5.4 s | 289% (≈3 of 4 workers busy) | 41 / 47 MB |
+| **Idle, 60 s** | — | **0.0%** | **44 MB** |
+| Browse the grid (list + all 1,000 covers) | 0.37 s | 46% | 47 MB |
+| Read flat-out (960 pages back to back) | 0.22 s | 73% | 19 MB |
+| **Read like a person (1 page every 2 s, 60 s)** | — | **0.0%** | **19 MB** |
+| Re-scan with nothing changed | 6 ms | — | 19 MB |
+| **Idle, 60 s, after all of the above** | — | **0.0%** | **11 MB** |
+| `SIGTERM` → exit 0 | 0.1 s | — | — |
+
+"0.0%" means no CPU tick was charged to the process over the whole minute — under
+0.02% of one core. Shelf has no timers running between scans and no file watcher;
+when nobody is reading it is a sleeping process holding an open socket.
+
+Other figures from the same run:
+
+- **Disk:** the whole cache (`index.db` + covers + `user.db`) was **15 MB** for a
+  1.8 GB library — under 1%. Pages are streamed from the archives, never
+  extracted.
+- **Serving:** a page took **0.18 ms** median and 0.95 ms p99 to serve (~330 MB/s);
+  a cover 0.33 ms median.
+- **Binary:** 13 MB, one file. The Docker image adds Debian slim plus
+  `bsdtar`.
+
+How far to trust these numbers:
+
+- The test machine was a 16-core arm64 Linux VM, and the archives had just been
+  written, so they were in the OS page cache. On a NAS with spinning disks or
+  an SMB mount, the first scan and the first read of each page will be limited
+  by the disk, not by Shelf. CPU and memory should change much less.
+- The synthetic pages are flat-colour JPEGs (~75 KB each), which decode faster
+  than real scans. The first-scan time is mostly cover thumbnailing, so expect
+  it to grow with real images; everything after the first scan is unaffected.
+- Zip only. The tar family and solid rar/7z are streamed through `bsdtar`,
+  which costs more per page (see [Notes & limitations](#notes--limitations)).
+- With `OLLAMA_URL` set, the semantic worker adds its own background load —
+  most of it in Ollama, not in Shelf — until every archive is captioned.
+
+To reproduce: point `ROOT_DIR` at a library and sample the process with
+`ps -o rss=,time= -p $(pgrep shelf)` (or read `/proc/<pid>/status` and
+`/proc/<pid>/stat`) during each phase.
+
 ## API
 
 | Method | Path | Purpose |
@@ -162,7 +229,13 @@ localStorage so return visits go straight through. **Lock** in the header
 forgets it on that device.
 
 **How it works.** The browser trades the key for an `HttpOnly` session cookie at
-`/api/auth/login`. The cookie — not a header — is what authenticates requests,
+`/api/auth/login`. The cookie holds a signed session token that expires after 30
+days, **not the key**, so a copied cookie can't be turned back into the key.
+Changing `API_KEY` invalidates every session at once; **Lock** only clears the
+cookie on that device, so rotate the key if a cookie may have been copied.
+Cookies set by older versions held the key itself and are no longer accepted.
+Browsers that saved the key re-login silently on their next request. The cookie (not a header)
+is what authenticates requests,
 because the reader loads pages and covers as `<img src="/api/…">` and an image
 request can't carry an `Authorization` header. The saved key exists so a
 returning visitor can re-establish the cookie silently instead of retyping it;
@@ -174,13 +247,32 @@ curl -H "X-API-Key: $API_KEY" http://localhost:8080/api/archives
 curl -H "Authorization: Bearer $API_KEY" http://localhost:8080/api/status
 ```
 
-Only the HTML shell (`/`) and the three `/api/auth/*` endpoints are reachable
-without a key; everything else — including every cover and page — returns 401.
-Failed logins are throttled per client IP (8 per 5 minutes).
+Only the HTML shell (`/`), the icons, `/healthz`, and the three `/api/auth/*`
+endpoints are reachable without a key. Everything else, including every cover
+and page, returns 401.
+
+Hardening that comes with it:
+
+- **Guessing is throttled.** Each client IP gets 8 wrong keys per 5 minutes, and
+  then a 429 even for the right key. IPv6 clients are grouped by `/64`. This
+  covers keys sent to the login form *and* keys sent in `X-API-Key` /
+  `Authorization` headers on any endpoint, so the limit can't be bypassed
+  through the API. Hitting the limit is logged.
+- **Constant-time comparison.** Wrong keys take the same time to reject however
+  close they are, and the timing doesn't reveal the key's length either.
+- **Cross-origin writes are refused.** With a key set, a `POST`/`PUT`/`DELETE`
+  that a browser sends from another origin gets a 403. That includes another app
+  on the same host but a different port, which `SameSite=Lax` alone would let
+  through. curl and scripts send no browser headers and are unaffected.
+- **Security headers.** With a key set, every response carries
+  `X-Frame-Options: DENY` / `frame-ancestors 'none'` (no clickjacking),
+  `X-Content-Type-Options: nosniff`, and `Referrer-Policy: same-origin`.
 
 **What this is and isn't.** It's one shared key for one household, not user
 accounts: there's no per-user state, and anyone with the key has full access
-including **Scan** and cover edits. The key crosses the wire in the clear over
+including **Scan** and cover edits. The key is also kept in the browser's
+localStorage, so anyone with access to an unlocked device can read it there. Use
+**Lock** on shared machines. The key crosses the wire in the clear over
 plain HTTP, so if you expose Shelf beyond your LAN, put it behind a reverse
 proxy with TLS — the cookie sets its `Secure` flag automatically when the
 connection is HTTPS (or when the proxy sends `X-Forwarded-Proto: https`).
