@@ -54,6 +54,15 @@
   .helpbox code{background:var(--panel-2);border:1px solid var(--line);border-radius:4px;padding:.05rem .3rem}
   .helpbox .hb-ns{color:var(--muted);border-top:1px solid var(--line);padding-top:.55rem}
   .helpbox #helpNs{color:var(--accent)}
+  @media (max-width:640px){
+    /* brand + search on the first row, compact controls below */
+    header{gap:.4rem;padding:.55rem .65rem}
+    header #q{flex:1 1 calc(100% - 5rem);min-width:0}
+    header button{padding:.35rem .55rem;font-size:.85rem}
+    .status{min-width:0;font-size:.78rem}
+    main{padding:.65rem}
+    .grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:.65rem}
+  }
 
   /* reader */
   .reader{position:fixed;inset:0;z-index:20;background:#0c0c0e;display:none;flex-direction:column}
@@ -75,15 +84,26 @@
   .rstage.rtl .rslide{flex-direction:row-reverse}  /* manga: first page on the right */
   .rstage img{display:block;user-select:none;-webkit-user-select:none;-webkit-user-drag:none}
   .rstage img[hidden]{display:none}   /* keep the 2nd page hidden in 1-page mode */
-  .rstage.fitH img{max-height:calc(100vh - 52px);width:auto;max-width:100%}
+  .rstage.fitH img{max-height:100%;width:auto;max-width:100%}  /* the slide, not 100vh: mobile toolbars and a wrapped bar */
   .rstage.fitW img{width:100%;height:auto}
   .rstage.spread.fitH img{max-width:calc(50vw - 1px)} /* two pages share the width */
   .rstage.spread.fitW img{width:calc(50% - 1px)}
   .pageind{min-width:8ch;text-align:center;color:var(--muted);font-size:.85rem}
-  .navzone{position:fixed;top:52px;bottom:0;width:22%;z-index:21;cursor:pointer;touch-action:pan-y pinch-zoom}
+  .navzone{position:absolute;top:0;bottom:0;width:22%;z-index:21;cursor:pointer;touch-action:pan-y pinch-zoom}
   .navzone.left{left:0}
   .navzone.right{right:0}
-  @media (max-width:640px){.rtitle{display:none}}
+  .ropts,.rnav{display:flex;gap:.6rem;align-items:center}
+  .rbar button,.dbar button{white-space:nowrap}
+  @media (max-width:640px){
+    .rtitle{display:none}
+    /* two rows: back + view options, then page navigation across the full width */
+    .rbar{flex-wrap:wrap;height:auto;gap:.4rem;padding:.4rem .5rem}
+    .ropts{gap:.35rem}
+    .rnav{flex:1 0 100%;justify-content:space-between;gap:.35rem}
+    .rnav button{flex:1}
+    .rbar button,.dbar button{padding:.4rem .6rem;font-size:.9rem}
+    .dbar{gap:.4rem;padding:.4rem .5rem}
+  }
 
   /* detail view */
   .detail{position:fixed;inset:0;z-index:18;background:var(--bg);display:none;flex-direction:column}
@@ -117,6 +137,16 @@
     font-size:.66rem;padding:.22rem 0;opacity:0;cursor:pointer}
   .pcell:hover .setcover{opacity:1}
   .setcover:hover{background:var(--accent-dim)}
+  @media (hover:none){  /* no hover on touch screens */
+    .setcover{opacity:1}
+    .pcell.iscover .setcover{display:none}
+  }
+  @media (max-width:640px){
+    .dbody{padding:.75rem}
+    .dmeta{gap:.75rem}
+    .dcover{width:110px}
+    .tgl{min-width:0;flex-basis:100%}
+  }
   .covbadge{position:absolute;top:4px;left:4px;background:var(--accent);color:#111;font-size:.58rem;
     font-weight:700;padding:.05rem .3rem;border-radius:4px;letter-spacing:.03em}
 
@@ -200,15 +230,19 @@
       <button id="rClose">← Back</button>
       <div id="rTitle" class="rtitle"></div>
       <div class="spacer"></div>
-      <button id="rFav" class="toggle" aria-pressed="false" title="Favorite">♥</button>
-      <button id="rDir" class="toggle" aria-pressed="false" title="Reading direction">LTR</button>
-      <button id="rFit" class="toggle" title="Fit">Fit height</button>
-      <button id="rSpread" class="toggle" aria-pressed="false" title="Page layout">1 page</button>
-      <button id="rFirst" title="First page">⏮</button>
-      <button id="rLeft" title="Turn page">◀</button>
-      <div id="rInd" class="pageind"></div>
-      <button id="rRight" title="Turn page">▶</button>
-      <button id="rLast" title="Last page">⏭</button>
+      <div class="ropts">
+        <button id="rFav" class="toggle" aria-pressed="false" title="Favorite">♥</button>
+        <button id="rDir" class="toggle" aria-pressed="false" title="Reading direction">LTR</button>
+        <button id="rFit" class="toggle" title="Fit">Fit height</button>
+        <button id="rSpread" class="toggle" aria-pressed="false" title="Page layout">1 page</button>
+      </div>
+      <div class="rnav">
+        <button id="rFirst" title="First page">⏮</button>
+        <button id="rLeft" title="Turn page">◀</button>
+        <div id="rInd" class="pageind"></div>
+        <button id="rRight" title="Turn page">▶</button>
+        <button id="rLast" title="Last page">⏭</button>
+      </div>
     </div>
     <div id="rStage" class="rstage fitH">
       <div id="rTrack" class="rtrack">
@@ -216,9 +250,9 @@
         <div id="rSlideC" class="rslide"><img id="rImg" alt=""><img id="rImg2" alt="" hidden></div>
         <div id="rSlideR" class="rslide right"><img alt="" hidden><img alt="" hidden></div>
       </div>
+      <div class="navzone left" id="navL"></div>
+      <div class="navzone right" id="navR"></div>
     </div>
-    <div class="navzone left" id="navL"></div>
-    <div class="navzone right" id="navR"></div>
   </div>
 
   <div id="detail" class="detail" aria-hidden="true">
