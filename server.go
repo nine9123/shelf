@@ -308,6 +308,14 @@ func (a *App) handleCover(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// The file is named .jpg, but an undecodable AVIF page is cached verbatim
+	// (see makeThumb), so set the type from the content, not the extension.
+	if cf, err := os.Open(f); err == nil {
+		head := make([]byte, 12)
+		n, _ := io.ReadFull(cf, head)
+		cf.Close()
+		w.Header().Set("Content-Type", coverContentType(head[:n]))
+	}
 	// URL is versioned (?v=coverVer), so cache hard; a changed cover is a new URL.
 	// ETag is a backstop for revalidation after expiry.
 	w.Header().Set("ETag", fmt.Sprintf(`"c%x-%x"`, info.ModTime().UnixNano(), info.Size()))

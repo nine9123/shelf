@@ -425,9 +425,10 @@ is a small, isolated change when you want it:
 
 ## Notes & limitations
 
-- Cover generation decodes JPEG/PNG/GIF (standard library). WebP/AVIF covers
-  aren't decoded in this slice, so those archives index fine but show no cover
-  until you adopt the libvips path above.
+- Cover generation decodes JPEG/PNG/GIF/BMP/WebP in pure Go. AVIF has no
+  pure-Go decoder, so an AVIF cover page is cached as the original file (not
+  scaled down) and served as `image/avif` for the browser to display; adopt the
+  libvips path above to get small thumbnails for those too.
 - **Formats.** Zip/cbz is read natively. RAR, 7z, and the tar family are read
   through libarchive (`bsdtar`), read-only — including RAR5. Creating or writing
   these formats is out of scope; Shelf never modifies your files.
