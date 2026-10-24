@@ -21,6 +21,7 @@ import (
 var ctByExt = map[string]string{
 	".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
 	".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+	".avif": "image/avif",
 }
 
 type archiveItem struct {
