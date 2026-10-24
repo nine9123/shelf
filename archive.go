@@ -17,11 +17,29 @@ import (
 
 var imageExts = map[string]bool{
 	".jpg": true, ".jpeg": true, ".png": true,
-	".gif": true, ".webp": true, ".bmp": true,
+	".gif": true, ".webp": true, ".bmp": true, ".avif": true,
 }
 
 func isImageName(name string) bool {
-	return imageExts[strings.ToLower(path.Ext(name))]
+	return !isMacJunk(name) && imageExts[strings.ToLower(path.Ext(name))]
+}
+
+// isMacJunk reports whether an entry is metadata macOS adds when compressing:
+// AppleDouble "._name" resource-fork files (often under "__MACOSX/") and
+// ".DS_Store". These carry an image's extension but are not images, so
+// counting them inflates the page count with unreadable pages.
+func isMacJunk(name string) bool {
+	name = strings.ReplaceAll(name, "\\", "/")
+	base := path.Base(name)
+	if strings.HasPrefix(base, "._") || base == ".DS_Store" {
+		return true
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == "__MACOSX" {
+			return true
+		}
+	}
+	return false
 }
 
 // archiveMode reports whether a filename is an archive we index, and whether it
@@ -104,7 +122,7 @@ func openZip(absPath string) (*pageArchive, error) {
 		byName[f.Name] = f
 		if isImageName(f.Name) {
 			images = append(images, f.Name)
-		} else if metaFile == nil && strings.EqualFold(path.Ext(f.Name), ".txt") {
+		} else if metaFile == nil && !isMacJunk(f.Name) && strings.EqualFold(path.Ext(f.Name), ".txt") {
 			metaFile = f
 		}
 	}
@@ -189,7 +207,7 @@ func loadListing(absPath string) (*listing, error) {
 	for _, n := range names {
 		if isImageName(n) {
 			l.images = append(l.images, n)
-		} else if l.txtName == "" && strings.EqualFold(path.Ext(n), ".txt") {
+		} else if l.txtName == "" && !isMacJunk(n) && strings.EqualFold(path.Ext(n), ".txt") {
 			l.txtName = n
 		}
 	}
