@@ -102,7 +102,10 @@ ROOT_DIR=/path/to/archives CACHE_DIR=/tmp/shelf-cache go run .
 ## How it works
 
 1. **Scan** walks `ROOT_DIR` and diffs it against the index by `(path, size,
-   mtime)`. Only new or changed archives are queued; vanished files are pruned.
+   mtime)`. Only new or changed archives are queued; vanished files (and
+   symlinks whose target is gone) are pruned. If the library comes up
+   completely empty, automatic scans assume the mount is missing and leave the
+   index alone; a manual `POST /api/scan` trusts it and prunes everything.
 2. A **worker pool** opens each archive, lists its image entries in natural
    order (`page2` before `page10`), reads the first `.txt` as metadata, and
    writes a cover thumbnail. Workers never touch the database — the scanner is

@@ -556,7 +556,7 @@ func (a *App) handleScan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "already running"})
 		return
 	}
-	go a.Scan()
+	go a.Rescan()
 	writeJSON(w, http.StatusOK, map[string]any{"status": "started"})
 }
 

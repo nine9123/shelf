@@ -83,7 +83,13 @@ func (a *App) coverPath(rel string) string {
 // A scan can be cut off at any point (the app is stopped while idle, mid-scan
 // or not). It then stops collecting results and returns; anything not yet
 // written stays un-indexed and is picked up by the next scan.
-func (a *App) Scan() {
+func (a *App) Scan() { a.scan(false) }
+
+// Rescan is a scan the user asked for (POST /api/scan). It differs from Scan
+// only in trusting an empty library: see the missing-mount guard in scan.
+func (a *App) Rescan() { a.scan(true) }
+
+func (a *App) scan(manual bool) {
 	if !a.scanning.CompareAndSwap(false, true) {
 		return // a scan is already running
 	}
@@ -111,8 +117,10 @@ func (a *App) Scan() {
 		if indexed, _ := archiveMode(d.Name()); !indexed {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil {
+		// Stat, not Lstat: a symlinked archive is fingerprinted by its target,
+		// and a dangling link (target deleted) counts as gone, so it's pruned.
+		info, err := os.Stat(p)
+		if err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
 		rel, err := filepath.Rel(a.cfg.RootDir, p)
@@ -151,9 +159,16 @@ func (a *App) Scan() {
 	// library mount has almost certainly gone missing. Bail out rather than
 	// prune every row and delete every cover (an expensive, pointless rebuild).
 	// user.db is untouched regardless, so favorites/progress are never at risk.
+	//
+	// A rescan the user asked for is trusted when the library root itself is
+	// readable: they deleted the last archives, and the guard would otherwise
+	// keep the dead rows forever. A root that's gone or unreadable never prunes.
 	if len(disk) == 0 && len(known) > 0 {
-		log.Printf("scan: 0 archives on disk but %d indexed — library mount looks missing; skipping this scan", len(known))
-		return
+		if _, err := os.ReadDir(a.cfg.RootDir); !manual || err != nil {
+			log.Printf("scan: 0 archives on disk but %d indexed — library mount looks missing; skipping this scan (a manual rescan prunes if the library really is empty)", len(known))
+			return
+		}
+		log.Printf("scan: 0 archives on disk; manual rescan, pruning all %d indexed", len(known))
 	}
 
 	// 3. anything new, changed, or not yet successfully indexed gets a job
@@ -169,18 +184,23 @@ func (a *App) Scan() {
 
 	// 4. prune rows whose files are gone, and drop their covers + tags. One
 	//    transaction for the lot: a commit per statement is far slower.
-	if tx, err := a.index.Begin(); err == nil {
-		for rel := range known {
-			if _, ok := disk[rel]; !ok {
-				var id int64
-				tx.QueryRow(`SELECT id FROM archives WHERE path = ?`, rel).Scan(&id)
-				tx.Exec(`DELETE FROM tags WHERE archive_id = ?`, id)
-				tx.Exec(`DELETE FROM archives WHERE path = ?`, rel)
+	//    A failed statement rolls the lot back (logged; the next scan retries)
+	//    rather than committing a partial prune, and covers go only after the
+	//    commit, so a row is never left pointing at a deleted cover.
+	var gone []string
+	for rel := range known {
+		if _, ok := disk[rel]; !ok {
+			gone = append(gone, rel)
+		}
+	}
+	if len(gone) > 0 {
+		if err := a.prune(gone); err != nil {
+			log.Printf("scan: prune: %v", err)
+		} else {
+			for _, rel := range gone {
 				os.Remove(a.coverPath(rel))
 			}
-		}
-		if err := tx.Commit(); err != nil {
-			log.Printf("scan: prune: %v", err)
+			log.Printf("scan: pruned %d archives no longer on disk", len(gone))
 		}
 	}
 
@@ -216,6 +236,25 @@ func (a *App) Scan() {
 		log.Printf("scan: %d duplicate IDs detected — favorites on those are ambiguous; see /api/id-report", dups)
 	}
 	log.Printf("scan: done in %s", time.Since(start).Round(time.Millisecond))
+}
+
+// prune deletes the index rows (and their tags) for the given paths in one
+// transaction.
+func (a *App) prune(paths []string) error {
+	tx, err := a.index.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // no-op after a successful Commit
+	for _, rel := range paths {
+		if _, err := tx.Exec(`DELETE FROM tags WHERE archive_id IN (SELECT id FROM archives WHERE path = ?)`, rel); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM archives WHERE path = ?`, rel); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (a *App) writeResult(r result) {
