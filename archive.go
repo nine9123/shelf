@@ -43,11 +43,12 @@ func isMacJunk(name string) bool {
 }
 
 // archiveMode reports whether a filename is an archive we index, and whether it
-// is handled natively (zip) or via libarchive/bsdtar (everything else).
+// is handled natively (zip, and EPUB, which is a zip) or via libarchive/bsdtar
+// (everything else).
 func archiveMode(name string) (indexed bool, useZip bool) {
 	l := strings.ToLower(name)
 	switch {
-	case hasAnySuffix(l, ".zip", ".cbz"):
+	case hasAnySuffix(l, ".zip", ".cbz", ".epub"):
 		return true, true
 	case hasAnySuffix(l, ".rar", ".cbr", ".7z", ".cb7", ".tar", ".cbt",
 		".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2"):
@@ -99,6 +100,9 @@ func (p *pageArchive) Close() error {
 }
 
 func openArchive(absPath string) (*pageArchive, error) {
+	if strings.HasSuffix(strings.ToLower(absPath), ".epub") {
+		return openEpub(absPath)
+	}
 	if _, useZip := archiveMode(absPath); useZip {
 		return openZip(absPath)
 	}
