@@ -24,12 +24,46 @@ import (
 // no cgo image libraries. It is fine for a first pass; for a full 2 TB library
 // swap this for libvips (govips) — see the README — which is far faster and can
 // emit WebP.
+//
+// AVIF has no pure-Go decoder, so an AVIF page that can't be decoded is stored
+// as-is instead of failing: browsers display it natively, and handleCover
+// serves it with the right Content-Type (see coverContentType).
 func makeThumb(r io.Reader, w int, dst string) error {
-	var buf bytes.Buffer
-	if err := makeThumbTo(r, w, &buf); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(r, maxCoverSrc+1))
+	if err != nil {
 		return err
 	}
+	var buf bytes.Buffer
+	if err := makeThumbTo(bytes.NewReader(raw), w, &buf); err != nil {
+		if !isAVIF(raw) || len(raw) > maxCoverSrc {
+			return err
+		}
+		return writeFileAtomic(dst, raw, 0o644)
+	}
 	return writeFileAtomic(dst, buf.Bytes(), 0o644)
+}
+
+// maxCoverSrc caps how much of a page makeThumb reads, matching the per-page
+// cap handleThumb uses.
+const maxCoverSrc = 48 << 20
+
+// isAVIF reports whether data starts with an ISO-BMFF ftyp box whose major
+// brand is AVIF (still image or image sequence).
+func isAVIF(data []byte) bool {
+	if len(data) < 12 || string(data[4:8]) != "ftyp" {
+		return false
+	}
+	brand := string(data[8:12])
+	return brand == "avif" || brand == "avis"
+}
+
+// coverContentType returns the MIME type of a cached cover from its leading
+// bytes: covers are JPEG thumbnails, except the AVIF passthrough above.
+func coverContentType(head []byte) string {
+	if isAVIF(head) {
+		return "image/avif"
+	}
+	return "image/jpeg"
 }
 
 // writeFileAtomic writes data to a temp file next to dst and renames it over

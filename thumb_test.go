@@ -119,3 +119,71 @@ func TestHandleThumbScalesOrFallsBack(t *testing.T) {
 		t.Fatalf("page 1: fallback body = %q", rec.Body.Bytes())
 	}
 }
+
+// An AVIF page can't be decoded here, so setting it as the cover must keep the
+// original bytes and serve them as image/avif rather than reporting no cover.
+func TestSetCoverAVIFPassthrough(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := openIndexDB(filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	covers := filepath.Join(dir, "covers")
+	os.MkdirAll(covers, 0o755)
+	a := &App{cfg: Config{RootDir: dir, CoversDir: covers, ThumbWidth: 120}, index: idx}
+
+	var png bytes.Buffer
+	if err := pngenc.Encode(&png, testImages(480, 300)["rgba"]); err != nil {
+		t.Fatal(err)
+	}
+	// ftyp box with major brand "avif"; the rest is not decodable by anything here
+	avif := append([]byte("\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf"), "payload"...)
+	f, _ := os.Create(filepath.Join(dir, "a.cbz"))
+	zw := zip.NewWriter(f)
+	for name, data := range map[string][]byte{
+		"p1.png": png.Bytes(), "p2.avif": avif, "p3.jpg": []byte("not an image"),
+	} {
+		w, _ := zw.Create(name)
+		w.Write(data)
+	}
+	zw.Close()
+	f.Close()
+	a.writeResult(result{rel: "a.cbz", title: "a", pageCount: 3})
+	var id string
+	idx.QueryRow(`SELECT id FROM archives WHERE path='a.cbz'`).Scan(&id)
+
+	cover := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/api/archives/"+id+"/cover", nil)
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		a.handleCover(rec, req)
+		return rec
+	}
+
+	if !a.regenCover(id, 0) {
+		t.Fatal("png page: no cover")
+	}
+	if rec := cover(); rec.Code != 200 || rec.Header().Get("Content-Type") != "image/jpeg" {
+		t.Fatalf("png page: %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+
+	if !a.regenCover(id, 1) {
+		t.Fatal("avif page: no cover")
+	}
+	rec := cover()
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != "image/avif" {
+		t.Fatalf("avif page: %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	if !bytes.Equal(rec.Body.Bytes(), avif) {
+		t.Fatalf("avif page: body = %q", rec.Body.Bytes())
+	}
+
+	// undecodable non-AVIF data is still rejected, not stored as a cover
+	if a.regenCover(id, 2) {
+		t.Fatal("garbage page: got a cover")
+	}
+	if rec := cover(); rec.Code != 404 {
+		t.Fatalf("garbage page: %d", rec.Code)
+	}
+}
