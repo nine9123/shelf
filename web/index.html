@@ -61,18 +61,26 @@
   .rbar{display:flex;gap:.6rem;align-items:center;padding:.5rem .8rem;
     background:rgba(20,20,24,.94);border-bottom:1px solid var(--line);height:52px}
   .rtitle{font-size:.9rem;max-width:36vw;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-  .rstage{flex:1;overflow:auto;display:flex;justify-content:center;gap:2px;background:#0c0c0e}
-  .rstage.fitH{align-items:center}
-  .rstage.fitW{align-items:flex-start}
-  .rstage.rtl{flex-direction:row-reverse}          /* manga: first page on the right */
-  .rstage img{display:block}
+  /* The stage is a three-slot horizontal slider: the current spread in the
+     middle, its neighbours parked one screen to either side. Dragging moves the
+     track; vertical panning and pinch-zoom stay with the browser. */
+  .rstage{flex:1;position:relative;overflow:hidden;background:#0c0c0e;touch-action:pan-y pinch-zoom}
+  .rtrack{position:absolute;inset:0;will-change:transform}
+  .rslide{position:absolute;inset:0;overflow:auto;display:flex;justify-content:center;gap:2px;
+    touch-action:pan-y pinch-zoom}  /* scroll containers reset touch-action, so repeat it */
+  .rslide.left{transform:translateX(-100%)}
+  .rslide.right{transform:translateX(100%)}
+  .rstage.fitH .rslide{align-items:center}
+  .rstage.fitW .rslide{align-items:flex-start}
+  .rstage.rtl .rslide{flex-direction:row-reverse}  /* manga: first page on the right */
+  .rstage img{display:block;user-select:none;-webkit-user-select:none;-webkit-user-drag:none}
   .rstage img[hidden]{display:none}   /* keep the 2nd page hidden in 1-page mode */
   .rstage.fitH img{max-height:calc(100vh - 52px);width:auto;max-width:100%}
   .rstage.fitW img{width:100%;height:auto}
   .rstage.spread.fitH img{max-width:calc(50vw - 1px)} /* two pages share the width */
   .rstage.spread.fitW img{width:calc(50% - 1px)}
   .pageind{min-width:8ch;text-align:center;color:var(--muted);font-size:.85rem}
-  .navzone{position:fixed;top:52px;bottom:0;width:22%;z-index:21;cursor:pointer}
+  .navzone{position:fixed;top:52px;bottom:0;width:22%;z-index:21;cursor:pointer;touch-action:pan-y pinch-zoom}
   .navzone.left{left:0}
   .navzone.right{right:0}
   @media (max-width:640px){.rtitle{display:none}}
@@ -202,7 +210,13 @@
       <button id="rRight" title="Turn page">▶</button>
       <button id="rLast" title="Last page">⏭</button>
     </div>
-    <div id="rStage" class="rstage fitH"><img id="rImg" alt=""><img id="rImg2" alt="" hidden></div>
+    <div id="rStage" class="rstage fitH">
+      <div id="rTrack" class="rtrack">
+        <div id="rSlideL" class="rslide left"><img alt="" hidden><img alt="" hidden></div>
+        <div id="rSlideC" class="rslide"><img id="rImg" alt=""><img id="rImg2" alt="" hidden></div>
+        <div id="rSlideR" class="rslide right"><img alt="" hidden><img alt="" hidden></div>
+      </div>
+    </div>
     <div class="navzone left" id="navL"></div>
     <div class="navzone right" id="navR"></div>
   </div>
@@ -504,6 +518,8 @@
     $('#reader').setAttribute('aria-hidden','true');
     $('#rImg').src = '';
     $('#rImg2').hidden = true;
+    fillSlide($('#rSlideL'), null);
+    fillSlide($('#rSlideR'), null);
     reader.id = null;
     syncScrollLock();
   }
@@ -648,15 +664,101 @@
     $('#rInd').textContent = hasSecond
       ? (reader.page + 1) + '–' + (reader.page + 2) + ' / ' + reader.count
       : (reader.page + 1) + ' / ' + reader.count;
-    const step = reader.spread ? 2 : 1;
-    preload(reader.page + step);
-    if(reader.spread) preload(reader.page + step + 1);
+    resetTrack();
+    renderNeighbours(); // also preloads the next spread
     saveProgress();
   }
 
-  function preload(n){
-    if(n >= 0 && n < reader.count){ const i = new Image(); i.src = '/api/archives/' + reader.id + '/page/' + n; }
+  // The spread one turn away in direction dir (+1 forward), or null past either end.
+  function neighbourStart(dir){
+    const p = reader.page + dir * (reader.spread ? 2 : 1);
+    return (p >= 0 && p < reader.count) ? p : null;
   }
+  // Which way the slot on each side of the screen turns: in RTL the next page is on the left.
+  function sideDir(side){ return (side === 'left') === reader.rtl ? 1 : -1; }
+
+  function fillSlide(slide, start){
+    const [a, b] = slide.querySelectorAll('img');
+    const base = '/api/archives/' + reader.id + '/page/';
+    if(start == null){
+      a.hidden = b.hidden = true;
+      a.removeAttribute('src'); b.removeAttribute('src');
+      return;
+    }
+    a.src = base + start; a.hidden = false;
+    if(reader.spread && start + 1 < reader.count){ b.src = base + (start + 1); b.hidden = false; }
+    else { b.hidden = true; b.removeAttribute('src'); }
+  }
+  function renderNeighbours(){
+    if(reader.id == null) return;
+    fillSlide($('#rSlideL'), neighbourStart(sideDir('left')));
+    fillSlide($('#rSlideR'), neighbourStart(sideDir('right')));
+  }
+
+  /* swipe: drag the pages like one long horizontal strip */
+  const swipe = { id:null, x0:0, y0:0, dx:0, dragging:false, settling:false, swallowClick:false,
+    lastX:0, lastT:0, v:0 };
+  function setTrack(x, animate){
+    const t = $('#rTrack');
+    t.style.transition = animate ? 'transform .22s ease-out' : 'none';
+    t.style.transform = x ? 'translateX(' + x + 'px)' : '';
+  }
+  function resetTrack(){
+    swipe.id = null; swipe.dragging = false; swipe.settling = false;
+    setTrack(0, false);
+  }
+  function swipeStart(e){
+    swipe.swallowClick = false;
+    if(swipe.settling || !e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    if(e.target.closest('.rbar')) return;
+    if(window.visualViewport && visualViewport.scale > 1.01) return; // pinch-zoomed: let it pan
+    swipe.id = e.pointerId; swipe.dragging = false; swipe.dx = 0; swipe.v = 0;
+    swipe.x0 = swipe.lastX = e.clientX; swipe.y0 = e.clientY; swipe.lastT = e.timeStamp;
+  }
+  function swipeMove(e){
+    if(e.pointerId !== swipe.id) return;
+    const dx = e.clientX - swipe.x0, dy = e.clientY - swipe.y0;
+    if(!swipe.dragging){
+      if(Math.abs(dy) > 10 && Math.abs(dy) >= Math.abs(dx)){ swipe.id = null; return; } // vertical: not ours
+      if(Math.abs(dx) < 10) return;
+      swipe.dragging = true;
+      $('#reader').setPointerCapture(e.pointerId);
+    }
+    const dt = e.timeStamp - swipe.lastT;
+    if(dt > 0) swipe.v = (e.clientX - swipe.lastX) / dt;
+    swipe.lastX = e.clientX; swipe.lastT = e.timeStamp;
+    // nothing on that side (first/last page): resist instead of following the finger
+    swipe.dx = neighbourStart(sideDir(dx > 0 ? 'left' : 'right')) == null ? dx * 0.3 : dx;
+    setTrack(swipe.dx, false);
+  }
+  function swipeEnd(e){
+    if(e.pointerId !== swipe.id) return;
+    swipe.id = null;
+    if(!swipe.dragging) return;
+    swipe.dragging = false;
+    swipe.swallowClick = true; // the drag shouldn't also count as a tap on a nav zone
+    const w = $('#rStage').clientWidth, dx = swipe.dx;
+    const flick = Math.abs(swipe.v) > 0.5 && Math.sign(swipe.v) === Math.sign(dx);
+    const dir = sideDir(dx > 0 ? 'left' : 'right');
+    if(e.type === 'pointerup' && dx && (Math.abs(dx) > w * 0.25 || flick) && neighbourStart(dir) != null){
+      swipe.settling = true;
+      setTrack(dx > 0 ? w : -w, true);
+      setTimeout(() => {
+        $('#rSlideC').scrollTop = 0; // match the neighbour, which was shown from its top
+        go(dir);                     // the route change re-renders and recentres the track
+      }, 230);
+    } else {
+      setTrack(0, true);
+    }
+  }
+  $('#reader').addEventListener('pointerdown', swipeStart);
+  $('#reader').addEventListener('pointermove', swipeMove);
+  $('#reader').addEventListener('pointerup', swipeEnd);
+  $('#reader').addEventListener('pointercancel', swipeEnd);
+  $('#reader').addEventListener('click', e => {
+    if(swipe.swallowClick){ swipe.swallowClick = false; e.stopPropagation(); e.preventDefault(); }
+  }, true);
+  $('#rStage').addEventListener('dragstart', e => e.preventDefault());
 
   function clampPage(p){ return Math.min(Math.max(0, p), Math.max(0, reader.count - 1)); }
 
@@ -880,7 +982,7 @@
     renderPage();
     if(reader.id != null) history.replaceState(null, '', '#/read/' + reader.id + '/' + reader.page);
   });
-  $('#rDir').addEventListener('click', () => { reader.rtl = !reader.rtl; savePrefs(); syncReaderButtons(); });
+  $('#rDir').addEventListener('click', () => { reader.rtl = !reader.rtl; savePrefs(); syncReaderButtons(); renderNeighbours(); });
   $('#rFav').addEventListener('click', async e => {
     const btn = e.currentTarget; // capture before await — currentTarget is null afterwards
     const on = btn.getAttribute('aria-pressed') === 'true';
