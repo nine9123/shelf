@@ -1,14 +1,15 @@
 # Shelf
 
 A small self-hosted reader for a library of sequential-image archives — folders
-of images that, in order, tell a story. It reads `.zip`/`.cbz`, `.rar`/`.cbr`,
-`.7z`/`.cb7`, and the tar family (`.tar`, `.tar.gz`, `.tar.xz`, `.tar.bz2`).
+of images that, in order, tell a story. It reads `.zip`/`.cbz`, `.epub`,
+`.rar`/`.cbr`, `.7z`/`.cb7`, and the tar family (`.tar`, `.tar.gz`, `.tar.xz`,
+`.tar.bz2`).
 Point it at a folder, open a browser, read. It indexes in the background, makes
 cover thumbnails, and lets you search, favorite, and resume where you left off.
 
 This is an intentionally minimal, end-to-end slice: enough of every part
 (scanner → index → API → reader) to actually use, and to see which features are
-worth building out next. It is a single small Go binary. Zip needs nothing else;
+worth building out next. It is a single small Go binary. Zip and EPUB need nothing else;
 the other formats are read through `bsdtar` (libarchive), which the Docker image
 installs for you.
 
@@ -429,7 +430,7 @@ is a small, isolated change when you want it:
   pure-Go decoder, so an AVIF cover page is cached as the original file (not
   scaled down) and served as `image/avif` for the browser to display; adopt the
   libvips path above to get small thumbnails for those too.
-- **Formats.** Zip/cbz is read natively. RAR, 7z, and the tar family are read
+- **Formats.** Zip/cbz and EPUB are read natively. RAR, 7z, and the tar family are read
   through libarchive (`bsdtar`), read-only — including RAR5. Creating or writing
   these formats is out of scope; Shelf never modifies your files.
 - **Sequential formats are slower per page.** Zip and (mostly) 7z allow
@@ -439,6 +440,14 @@ is a small, isolated change when you want it:
   will feel it. The per-archive page cache below removes this.
 - Page order is natural-sorted by filename; it assumes filenames sort into
   reading order, which is the usual convention for these archives.
+- **EPUB is read as pages, not as text.** The pages are the images the book's
+  spine shows, in reading order (`<img>` and SVG `<image>` in each content
+  document, or image items listed in the spine directly), so fixed-layout and
+  image-only EPUBs — comics, manga, picture books — read properly. A text EPUB
+  shows only its illustrations; there is no text reader. If the book has no
+  `info.txt`, its title, authors, subjects, publisher and language become the
+  metadata (`author:`, `subject:`, … tags). An EPUB without a readable manifest,
+  or whose spine shows no images, falls back to every image in natural order.
 - **Auth is one shared key, not user accounts.** `API_KEY` gates everything or
   nothing; there are no roles, no per-user favorites, and no way to revoke one
   device without rotating the key for all of them. That matches the app's single
