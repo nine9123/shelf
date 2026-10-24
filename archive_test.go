@@ -83,3 +83,31 @@ func TestListingCacheHitsAndInvalidates(t *testing.T) {
 		t.Fatal("failed listing was cached")
 	}
 }
+
+func TestOpenZipSkipsMacJunkAndReadsAvif(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "mac.zip")
+	f, _ := os.Create(p)
+	zw := zip.NewWriter(f)
+	for _, n := range []string{
+		"book/p1.webp", "book/p2.avif", "book/._p1.webp", ".DS_Store",
+		"__MACOSX/book/._p2.avif", "__MACOSX/book/._info.txt", "book/info.txt",
+	} {
+		w, _ := zw.Create(n)
+		w.Write([]byte("x " + n))
+	}
+	zw.Close()
+	f.Close()
+
+	arc, err := openArchive(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arc.Close()
+	got := arc.Images()
+	if len(got) != 2 || got[0] != "book/p1.webp" || got[1] != "book/p2.avif" {
+		t.Fatalf("images = %v, want [book/p1.webp book/p2.avif]", got)
+	}
+	if m := arc.Meta(); m != "x book/info.txt" {
+		t.Fatalf("meta = %q", m)
+	}
+}
