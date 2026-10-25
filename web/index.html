@@ -482,7 +482,7 @@
         if(state.fav && !it.favorite) card.remove(); // drop it from the favorites view
       });
       cover.appendChild(fav);
-      cover.addEventListener('click', () => { location.hash = '#/comic/' + it.id; });
+      cover.addEventListener('click', () => navigate('#/comic/' + it.id));
 
       const meta = el('div','meta');
       const sub = it.pageCount + ' pages' + (it.category ? ' · ' + it.category : '');
@@ -504,6 +504,14 @@
   //   #/read/{id}          reader, resume page
   //   #/read/{id}/{page}   reader at a page (each turn is a history entry)
   //   anything else        library
+  // Moves go through navigate(): pushState never counts as a navigation, whereas
+  // some mobile browsers (Orion on iOS) treat a location.hash assignment as one
+  // and flash the whole page. Back/forward still arrive as hashchange events.
+  function navigate(hash){
+    if(location.hash === hash || (hash === '#/' && !location.hash)) return;
+    history.pushState(null, '', hash);
+    applyRoute();
+  }
   function applyRoute(){
     hoverLeave();
     hideAC();
@@ -524,7 +532,7 @@
   async function openOrUpdateReader(id, page){
     if(reader.id !== id){
       const r = await api('/api/archives/' + id);
-      if(!r.ok){ location.hash = '#/'; return; }
+      if(!r.ok){ navigate('#/'); return; }
       const d = await r.json();
       reader.id = id;
       reader.count = d.pageCount;
@@ -550,6 +558,7 @@
   function hideReader(){
     $('#reader').classList.remove('open');
     $('#reader').setAttribute('aria-hidden','true');
+    renderSeq++; // drop a page swap still waiting on its decode
     $('#rImg').src = '';
     $('#rImg2').hidden = true;
     fillSlide($('#rSlideL'), null);
@@ -569,7 +578,7 @@
   const detail = { id:null, coverPage:0 };
   async function openDetail(id){
     const r = await api('/api/archives/' + id);
-    if(!r.ok){ location.hash = '#/'; return; }
+    if(!r.ok){ navigate('#/'); return; }
     const d = await r.json();
     detail.id = id;
     $('#dTitle').textContent = cleanName(d.title);
@@ -621,7 +630,7 @@
     const q = tag.includes(' ') ? (ns + ':"' + tag + '"') : (ns + ':' + tag);
     $('#q').value = q;
     state.q = q;
-    location.hash = '#/';
+    navigate('#/');
     loadList(true);
   }
 
@@ -643,7 +652,7 @@
       const img = el('img'); img.loading = 'lazy'; img.alt = ''; img.src = '/api/archives/' + id + '/thumb/' + n;
       const num = el('div','pnum'); num.textContent = (n + 1);
       cell.appendChild(set); cell.appendChild(img); cell.appendChild(num);
-      cell.addEventListener('click', () => { location.hash = '#/read/' + id + '/' + page; });
+      cell.addEventListener('click', () => navigate('#/read/' + id + '/' + page));
       frag.appendChild(cell);
     }
     grid.appendChild(frag);
@@ -683,24 +692,40 @@
     syncScrollLock();
   }
 
+  // Bumped on every render; a decode that finishes after a newer turn is dropped.
+  let renderSeq = 0;
   function renderPage(){
     if(reader.id == null) return;
+    const seq = ++renderSeq;
     const base = '/api/archives/' + reader.id + '/page/';
     const hasSecond = reader.spread && reader.page + 1 < reader.count;
-    $('#rImg').src = base + reader.page;
-    const second = $('#rImg2');
-    if(hasSecond){
-      second.src = base + (reader.page + 1);
-      second.hidden = false;
-    } else {
-      second.hidden = true;
-    }
+    const srcs = hasSecond ? [base + reader.page, base + (reader.page + 1)] : [base + reader.page];
     $('#rInd').textContent = hasSecond
       ? (reader.page + 1) + '–' + (reader.page + 2) + ' / ' + reader.count
       : (reader.page + 1) + ' / ' + reader.count;
-    resetTrack();
-    renderNeighbours(); // also preloads the next spread
     saveProgress();
+    // Keep the current spread (or the swiped-in neighbour) on screen until the
+    // new one is decoded, so a turn swaps pictures instead of flashing blank.
+    Promise.all(srcs.map(decodeImage)).then(() => {
+      if(seq !== renderSeq || reader.id == null) return;
+      $('#rImg').src = srcs[0];
+      const second = $('#rImg2');
+      if(hasSecond){
+        second.src = srcs[1];
+        second.hidden = false;
+      } else {
+        second.hidden = true;
+      }
+      resetTrack();
+      renderNeighbours(); // also preloads the next spread
+    });
+  }
+  // Resolves once src is loaded and decoded — or failed, so a broken page still shows.
+  function decodeImage(src){
+    const im = new Image();
+    im.src = src;
+    return im.decode ? im.decode().catch(() => {})
+      : new Promise(res => { im.onload = im.onerror = res; });
   }
 
   // The spread one turn away in direction dir (+1 forward), or null past either end.
@@ -799,7 +824,7 @@
   // Navigation just moves the URL; applyRoute() does the rendering.
   function gotoPage(p){
     if(p < 0 || p >= reader.count || p === reader.page) return;
-    location.hash = '#/read/' + reader.id + '/' + p;
+    navigate('#/read/' + reader.id + '/' + p);
   }
   function go(dir){ gotoPage(reader.page + dir * (reader.spread ? 2 : 1)); }
   function goFirst(){ gotoPage(0); }
@@ -833,8 +858,8 @@
     }, 600);
   }
 
-  function exitToLibrary(){ location.hash = '#/'; }
-  function readerBack(){ location.hash = reader.id != null ? ('#/comic/' + reader.id) : '#/'; }
+  function exitToLibrary(){ navigate('#/'); }
+  function readerBack(){ navigate(reader.id != null ? ('#/comic/' + reader.id) : '#/'); }
 
   /* controls */
   $('#q').addEventListener('input', e => {
@@ -887,7 +912,7 @@
 
   // detail controls
   $('#dClose').addEventListener('click', exitToLibrary);
-  $('#dRead').addEventListener('click', () => { if(detail.id != null) location.hash = '#/read/' + detail.id; });
+  $('#dRead').addEventListener('click', () => { if(detail.id != null) navigate('#/read/' + detail.id); });
   $('#dRefreshCover').addEventListener('click', async () => {
     if(detail.id == null) return;
     await api('/api/archives/' + detail.id + '/cover/refresh', { method:'POST' });
