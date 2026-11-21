@@ -175,7 +175,7 @@ To reproduce: point `ROOT_DIR` at a library and sample the process with
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/archives?q=&fav=1&hideDupes=1&limit=&offset=` | List / search |
+| GET | `/api/archives?q=&fav=1&hideDupes=1&group=1&limit=&offset=` | List / search (`group=1` folds a series' volumes into one item) |
 | GET | `/api/archives/{id}` | Detail (metadata, category, grouped tags, favorite, `lastPage`) |
 | GET | `/api/archives/{id}/cover` | Cover thumbnail (JPEG) |
 | GET | `/api/archives/{id}/page/{n}` | Stream page image `n` (ETag-cached) |
@@ -205,6 +205,16 @@ and re-encoding, and survive rebuilding the cache.
 - Quote values containing spaces: `artist:"john doe"`.
 - `category:name` filters the category.
 - Everything combines with **AND**: `parody:touhou artist:"john doe"`.
+- `volumes:"series name"` lists every volume of a series, in volume order.
+
+### Volume grouping
+
+Archives whose names differ only in a volume number — `Foo Vol. 1`, `Foo v2`,
+`Foo #3` — are shown as one card in the library, with the cover of the highest
+volume and a volume count. Tap it to list the volumes. The number is the last one
+in the name that isn't inside `()`, `[]` or `{}` (the leading `#id` doesn't
+count), and everything else in the name must match. Turn it off with **Group
+volumes** in the header.
 
 ### Metadata & tags
 

@@ -45,6 +45,8 @@
   .meta{padding:.55rem .6rem}
   .title{font-size:.85rem;line-height:1.3;max-height:2.6em;overflow:hidden}
   .sub{color:var(--muted);font-size:.72rem;margin-top:.2rem}
+  .volbadge{position:absolute;left:.4rem;bottom:.4rem;background:rgba(0,0,0,.65);color:#fff;
+    font-size:.72rem;padding:.15rem .45rem;border-radius:999px;pointer-events:none}
   .empty{color:var(--muted);text-align:center;padding:4rem 1rem}
   .sentinel{color:var(--muted);text-align:center;padding:1.4rem;min-height:1px;font-size:.85rem}
   .helpbox{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
@@ -188,6 +190,7 @@
     <button id="qHelp" class="toggle" title="Search syntax" aria-pressed="false">?</button>
     <button id="favBtn" class="toggle" aria-pressed="false">Favorites</button>
     <button id="dupBtn" class="toggle" title="Hide comics that share an ID">Hide dupes</button>
+    <button id="grpBtn" class="toggle" title="Show volumes of the same series as one cover">Group volumes</button>
     <button id="semBtn" class="toggle" title="Search by meaning (needs Ollama)">Semantic</button>
     <div class="spacer"></div>
     <div id="status" class="status"></div>
@@ -217,6 +220,7 @@
         <li>Quote values with spaces — <code>artist:"john doe"</code></li>
         <li>All terms must match (AND) — <code>parody:touhou artist:foo</code></li>
         <li>Filter the category with <code>category:doujinshi</code></li>
+        <li>List every volume of a series with <code>volumes:"series name"</code></li>
       </ul>
       <div class="hb-ns">Namespaces in your library: <span id="helpNs">…</span></div>
     </div>
@@ -379,13 +383,14 @@
   const prefs = loadPrefs();
   const def = (v, d) => v !== undefined ? v : d;
 
-  const state = { q:'', fav:false, semantic:false, hideDupes: def(prefs.hideDupes, true), offset:0, limit:60, loading:false, done:false };
+  const state = { q:'', fav:false, semantic:false, hideDupes: def(prefs.hideDupes, true), groupVolumes: def(prefs.groupVolumes, true), offset:0, limit:60, loading:false, done:false };
   const reader = { id:null, page:0, count:0,
     rtl: def(prefs.rtl, true), fitH: def(prefs.fitH, true), spread: def(prefs.spread, true) };
 
   function savePrefs(){
     try { localStorage.setItem(PREFS_KEY, JSON.stringify({
-      rtl: reader.rtl, spread: reader.spread, fitH: reader.fitH, hideDupes: state.hideDupes
+      rtl: reader.rtl, spread: reader.spread, fitH: reader.fitH, hideDupes: state.hideDupes,
+      groupVolumes: state.groupVolumes
     })); } catch(_) {}
   }
 
@@ -401,6 +406,7 @@
     if(state.q) params.set('q', state.q);
     if(state.fav) params.set('fav', '1');
     if(state.hideDupes) params.set('hideDupes', '1');
+    if(state.groupVolumes) params.set('group', '1');
     params.set('limit', state.limit);
     params.set('offset', state.offset);
     let items = [];
@@ -462,6 +468,7 @@
   function appendItems(items){
     const grid = $('#grid');
     for(const it of items){
+      if(it.volumes > 1){ grid.appendChild(groupCard(it)); continue; }
       const card = el('div','card');
       const cover = el('div','cover');
       if(it.hasCover){
@@ -494,6 +501,28 @@
       card.addEventListener('mouseleave', hoverLeave);
       grid.appendChild(card);
     }
+  }
+
+  // A series shown as one card: the highest volume's cover, and a tap lists
+  // every volume (the server stops grouping inside a volumes: search).
+  function groupCard(it){
+    const card = el('div','card');
+    const cover = el('div','cover');
+    if(it.hasCover){
+      const img = el('img'); img.loading='lazy';
+      img.src = '/api/archives/' + it.id + '/cover?v=' + it.coverVer; img.alt = it.seriesName || '';
+      cover.appendChild(img);
+    } else {
+      cover.appendChild(Object.assign(el('div','ph'), {textContent:'no cover'}));
+    }
+    cover.appendChild(Object.assign(el('div','volbadge'), {textContent: it.volumes + ' volumes'}));
+    cover.title = 'Show all ' + it.volumes + ' volumes';
+    cover.addEventListener('click', () => filterByTag('volumes', it.seriesKey));
+    const meta = el('div','meta');
+    meta.appendChild(Object.assign(el('div','title'), {textContent: it.seriesName || cleanName(it.title)}));
+    meta.appendChild(Object.assign(el('div','sub'), {textContent: it.volumes + ' volumes' + (it.category ? ' · ' + it.category : '')}));
+    card.appendChild(cover); card.appendChild(meta);
+    return card;
   }
 
   // Strip a leading "#id " (e.g. "1234 " or "-42 ") for a clean display name.
@@ -878,6 +907,12 @@
     savePrefs();
     loadList(true);
   });
+  $('#grpBtn').addEventListener('click', e => {
+    state.groupVolumes = !state.groupVolumes;
+    e.currentTarget.setAttribute('aria-pressed', state.groupVolumes ? 'true' : 'false');
+    savePrefs();
+    loadList(true);
+  });
   $('#semBtn').addEventListener('click', e => {
     state.semantic = !state.semantic;
     e.currentTarget.setAttribute('aria-pressed', state.semantic ? 'true' : 'false');
@@ -1091,6 +1126,7 @@
   function el(tag, cls){ const e = document.createElement(tag); if(cls) e.className = cls; return e; }
 
   $('#dupBtn').setAttribute('aria-pressed', state.hideDupes ? 'true' : 'false');
+  $('#grpBtn').setAttribute('aria-pressed', state.groupVolumes ? 'true' : 'false');
   syncReaderButtons();
 
   const io = new IntersectionObserver(
