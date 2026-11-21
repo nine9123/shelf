@@ -232,14 +232,17 @@ func (a *App) writeResult(r result) {
 		return
 	}
 	defer tx.Rollback() // no-op after a successful Commit
+	seriesKey, _, vol, _ := seriesOf(r.title)
 	_, err = tx.Exec(`
-INSERT INTO archives (path, identity, title, size, mtime, page_count, meta, category, has_cover, status, error, indexed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO archives (path, identity, title, size, mtime, page_count, meta, category, has_cover, status, error, indexed_at, series_key, volume)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(path) DO UPDATE SET
     identity=excluded.identity, title=excluded.title, size=excluded.size, mtime=excluded.mtime,
     page_count=excluded.page_count, meta=excluded.meta, category=excluded.category, has_cover=excluded.has_cover,
-    status=excluded.status, error=excluded.error, indexed_at=excluded.indexed_at`,
-		r.rel, identityOf(r.rel), r.title, r.size, r.mt, r.pageCount, r.meta, r.category, b2i(r.hasCover), status, errStr, time.Now().Unix())
+    status=excluded.status, error=excluded.error, indexed_at=excluded.indexed_at,
+    series_key=excluded.series_key, volume=excluded.volume`,
+		r.rel, identityOf(r.rel), r.title, r.size, r.mt, r.pageCount, r.meta, r.category, b2i(r.hasCover), status, errStr, time.Now().Unix(),
+		seriesKey, vol)
 	if err != nil {
 		log.Printf("scan: write %s: %v", r.rel, err)
 		return

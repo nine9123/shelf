@@ -23,6 +23,10 @@ type Config struct {
 	Workers      int
 	ThumbWidth   int
 
+	// GroupVolumes is the library's default for the "Group volumes" toggle.
+	// A browser that has flipped the toggle keeps its own choice.
+	GroupVolumes bool
+
 	// Shared secret for the whole app. Empty means no authentication at all.
 	APIKey string
 
@@ -41,6 +45,7 @@ func LoadConfig() Config {
 		ScanInterval: envDur("SCAN_INTERVAL", 15*time.Minute),
 		Workers:      envInt("WORKER_CONCURRENCY", runtime.NumCPU()),
 		ThumbWidth:   envInt("THUMB_WIDTH", 400),
+		GroupVolumes: envBool("GROUP_VOLUMES", true),
 		// Trimmed because keys are usually pasted, and a trailing newline from
 		// `API_KEY=$(cat key.txt)` would otherwise never match what's typed in.
 		APIKey: strings.TrimSpace(envStr("API_KEY", "")),
@@ -70,6 +75,17 @@ func envInt(k string, def int) int {
 	if v := os.Getenv(k); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+// envBool accepts what strconv.ParseBool does (1/0, true/false, t/f, any
+// case); anything else falls back to def, like the other env helpers.
+func envBool(k string, def bool) bool {
+	if v := os.Getenv(k); v != "" {
+		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
+			return b
 		}
 	}
 	return def

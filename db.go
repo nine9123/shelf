@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -30,7 +31,9 @@ CREATE TABLE IF NOT EXISTS archives (
     has_cover   INTEGER NOT NULL DEFAULT 0,
     status      TEXT NOT NULL DEFAULT 'pending', -- pending | indexed | error
     error       TEXT NOT NULL DEFAULT '',
-    indexed_at  INTEGER NOT NULL DEFAULT 0
+    indexed_at  INTEGER NOT NULL DEFAULT 0,
+    series_key  TEXT NOT NULL DEFAULT '',      -- see seriesOf; '' = not part of a numbered series
+    volume      INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS tags (
     archive_id INTEGER NOT NULL,
@@ -54,12 +57,38 @@ CREATE TABLE IF NOT EXISTS tags (
 			log.Printf("index.db: added %s column; will re-index to backfill on next scan", m.name)
 		}
 	}
+	// Series columns are derived from the title alone, so they are backfilled
+	// right here instead of re-indexing every archive: when the columns are new,
+	// and again whenever the rules in seriesOf change (seriesRulesVersion).
+	for _, ddl := range []string{
+		`ALTER TABLE archives ADD COLUMN series_key TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE archives ADD COLUMN volume INTEGER NOT NULL DEFAULT 0`,
+	} {
+		db.Exec(ddl) // errors harmlessly when the column exists
+	}
+	var ver int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if ver < seriesRulesVersion {
+		if err := backfillSeries(db); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, seriesRulesVersion)); err != nil {
+			db.Close()
+			return nil, err
+		}
+		log.Printf("index.db: updated series columns for volume grouping")
+	}
 	// 3. Indexes last, once every column they reference is guaranteed to exist.
 	idx := `
 CREATE INDEX IF NOT EXISTS idx_archives_status   ON archives(status);
 CREATE INDEX IF NOT EXISTS idx_archives_title    ON archives(title);
 CREATE INDEX IF NOT EXISTS idx_archives_identity ON archives(identity);
 CREATE INDEX IF NOT EXISTS idx_archives_category ON archives(category);
+CREATE INDEX IF NOT EXISTS idx_archives_series   ON archives(series_key);
 CREATE INDEX IF NOT EXISTS idx_tags_lookup       ON tags(namespace, tag);
 CREATE INDEX IF NOT EXISTS idx_tags_archive      ON tags(archive_id);`
 	if _, err := db.Exec(idx); err != nil {
@@ -67,6 +96,46 @@ CREATE INDEX IF NOT EXISTS idx_tags_archive      ON tags(archive_id);`
 		return nil, err
 	}
 	return db, nil
+}
+
+// seriesRulesVersion is stored as the index's PRAGMA user_version. Bump it when
+// seriesOf changes, so existing caches recompute series_key/volume on open.
+// 2: a leading number is the ID again, never the volume (volumes are suffixes).
+const seriesRulesVersion = 2
+
+// backfillSeries fills series_key/volume for every row from its title.
+func backfillSeries(db *sql.DB) error {
+	type row struct {
+		id    int64
+		title string
+	}
+	var all []row
+	rows, err := db.Query(`SELECT id, title FROM archives`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var r row
+		if rows.Scan(&r.id, &r.title) == nil {
+			all = append(all, r)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, r := range all {
+		key, _, vol, _ := seriesOf(r.title)
+		if _, err := tx.Exec(`UPDATE archives SET series_key=?, volume=? WHERE id=?`, key, vol, r.id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // openUserDB opens the durable database. It is keyed by the archive's identity

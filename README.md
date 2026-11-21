@@ -175,7 +175,7 @@ To reproduce: point `ROOT_DIR` at a library and sample the process with
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/archives?q=&fav=1&hideDupes=1&limit=&offset=` | List / search |
+| GET | `/api/archives?q=&fav=1&hideDupes=1&group=1&limit=&offset=` | List / search (`group=1` folds a series' volumes into one item) |
 | GET | `/api/archives/{id}` | Detail (metadata, category, grouped tags, favorite, `lastPage`) |
 | GET | `/api/archives/{id}/cover` | Cover thumbnail (JPEG) |
 | GET | `/api/archives/{id}/page/{n}` | Stream page image `n` (ETag-cached) |
@@ -205,6 +205,18 @@ and re-encoding, and survive rebuilding the cache.
 - Quote values containing spaces: `artist:"john doe"`.
 - `category:name` filters the category.
 - Everything combines with **AND**: `parody:touhou artist:"john doe"`.
+- `volumes:"series name"` lists every volume of a series, in volume order.
+
+### Volume grouping
+
+Archives whose names differ only in a volume number — `Foo Vol. 1`, `Foo v2`,
+`Foo #3`, `Some Series Name 01` — are shown as one card in the library, with the
+cover of the highest volume and a volume count. Tap it to list the volumes. The
+volume number is a suffix: the last number in the name that isn't inside `()`,
+`[]` or `{}` (the leading `#id` doesn't count, so `01 Some Series Name` is not a
+volume), and everything else in the name must match. Turn it off with **Group
+volumes** in the header. `GROUP_VOLUMES=false` makes it start off instead; a
+browser that has flipped the toggle keeps its own choice.
 
 ### Metadata & tags
 
@@ -328,6 +340,7 @@ The app itself reads these:
 | `WORKER_CONCURRENCY` | number of CPUs | Parallel indexers |
 | `THUMB_WIDTH` | `400` | Cover width in px |
 | `API_KEY` | — (empty) | Shared key for the whole app; empty = no authentication |
+| `GROUP_VOLUMES` | `true` | Default for the **Group volumes** toggle; `false` starts it off |
 | `INDEX_DB_PATH` / `USER_DB_PATH` | under `CACHE_DIR` | Override DB locations |
 
 These are Docker-only (used by Compose and the entrypoint, not the binary):

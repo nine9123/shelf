@@ -33,6 +33,11 @@ type archiveItem struct {
 	CoverVer  int64  `json:"coverVer"` // changes when the cover is (re)generated; for cache-busting
 	HasCover  bool   `json:"hasCover"`
 	Favorite  bool   `json:"favorite"`
+	// Set only on a grouped card standing in for several volumes of a series;
+	// ID and cover are those of the highest volume.
+	Volumes    int    `json:"volumes,omitempty"`
+	SeriesKey  string `json:"seriesKey,omitempty"`
+	SeriesName string `json:"seriesName,omitempty"`
 }
 
 func (a *App) routes() http.Handler {
@@ -95,27 +100,42 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 	terms, tagFilters, category := parseQuery(r.URL.Query().Get("q"))
+	// "volumes:<series key>" lists one series' volumes (what a grouped card opens).
+	series, hasSeries := "", false
+	for i := 0; i < len(tagFilters); i++ {
+		if strings.EqualFold(tagFilters[i].ns, "volumes") {
+			series, hasSeries = seriesKey(tagFilters[i].val), true
+			tagFilters = append(tagFilters[:i], tagFilters[i+1:]...)
+			i--
+		}
+	}
+	// Collapse a series into one card, unless we're looking inside one.
+	group := r.URL.Query().Get("group") == "1" && !hasSeries
 	favSet := a.favoriteIDSet()
 
-	var sb strings.Builder
+	var where strings.Builder
 	var args []any
-	sb.WriteString(`SELECT id, path, identity, title, page_count, has_cover, category, indexed_at FROM archives WHERE status='indexed'`)
+	where.WriteString(` FROM archives WHERE status='indexed'`)
 	if r.URL.Query().Get("hideDupes") == "1" {
 		// Collapse duplicate IDs to a single representative (the lowest row id),
 		// so a mistakenly-shared ID shows once instead of cluttering the grid.
-		sb.WriteString(` AND id IN (SELECT MIN(id) FROM archives WHERE status='indexed' GROUP BY identity)`)
+		where.WriteString(` AND id IN (SELECT MIN(id) FROM archives WHERE status='indexed' GROUP BY identity)`)
 	}
 	for _, term := range terms { // plain words: title / path / info text
-		sb.WriteString(` AND (title LIKE ? OR meta LIKE ? OR path LIKE ?)`)
+		where.WriteString(` AND (title LIKE ? OR meta LIKE ? OR path LIKE ?)`)
 		like := "%" + term + "%"
 		args = append(args, like, like, like)
 	}
 	if category != "" {
-		sb.WriteString(` AND category = ? COLLATE NOCASE`)
+		where.WriteString(` AND category = ? COLLATE NOCASE`)
 		args = append(args, category)
 	}
+	if hasSeries {
+		where.WriteString(` AND series_key = ?`)
+		args = append(args, series)
+	}
 	for _, tf := range tagFilters { // each tag filter ANDed via its own subquery
-		sb.WriteString(` AND id IN (SELECT archive_id FROM tags WHERE namespace = ? COLLATE NOCASE AND tag = ? COLLATE NOCASE)`)
+		where.WriteString(` AND id IN (SELECT archive_id FROM tags WHERE namespace = ? COLLATE NOCASE AND tag = ? COLLATE NOCASE)`)
 		args = append(args, tf.ns, tf.val)
 	}
 	if favOnly {
@@ -124,15 +144,32 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"items": []archiveItem{}, "limit": limit, "offset": offset})
 			return
 		}
-		sb.WriteString(` AND identity IN (` + placeholders(len(idents)) + `)`)
+		where.WriteString(` AND identity IN (` + placeholders(len(idents)) + `)`)
 		for _, id := range idents {
 			args = append(args, id)
 		}
 	}
-	sb.WriteString(` ORDER BY title COLLATE NOCASE LIMIT ? OFFSET ?`)
+
+	const cols = `id, path, identity, title, page_count, has_cover, category, indexed_at, series_key`
+	var query string
+	switch {
+	case group:
+		// One row per series: the highest volume stands in for the rest (its
+		// cover is the card's cover), with the number of volumes that matched.
+		// Archives without a volume number are each their own group.
+		query = `SELECT ` + cols + `, n FROM (SELECT ` + cols + `,
+			ROW_NUMBER() OVER (PARTITION BY gk ORDER BY volume DESC, id) AS rn,
+			COUNT(*) OVER (PARTITION BY gk) AS n
+			FROM (SELECT ` + cols + `, volume, CASE WHEN series_key = '' THEN 'id:' || id ELSE series_key END AS gk` +
+			where.String() + `)) WHERE rn = 1 ORDER BY title COLLATE NOCASE LIMIT ? OFFSET ?`
+	case hasSeries:
+		query = `SELECT ` + cols + `, 1` + where.String() + ` ORDER BY volume, title COLLATE NOCASE LIMIT ? OFFSET ?`
+	default:
+		query = `SELECT ` + cols + `, 1` + where.String() + ` ORDER BY title COLLATE NOCASE LIMIT ? OFFSET ?`
+	}
 	args = append(args, limit, offset)
 
-	rows, err := a.index.Query(sb.String(), args...)
+	rows, err := a.index.Query(query, args...)
 	if err != nil {
 		httpErr(w, http.StatusInternalServerError, err)
 		return
@@ -141,13 +178,18 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 	items := []archiveItem{}
 	for rows.Next() {
 		var it archiveItem
-		var identity string
-		var hc int
-		if err := rows.Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &it.Category, &it.CoverVer); err != nil {
+		var identity, seriesKey string
+		var hc, n int
+		if err := rows.Scan(&it.ID, &it.Path, &identity, &it.Title, &it.PageCount, &hc, &it.Category, &it.CoverVer, &seriesKey, &n); err != nil {
 			continue
 		}
 		it.HasCover = hc == 1
 		it.Favorite = favSet[identity]
+		if n > 1 {
+			_, it.SeriesName, _, _ = seriesOf(it.Title)
+			it.SeriesKey = seriesKey
+			it.Volumes = n
+		}
 		items = append(items, it)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "limit": limit, "offset": offset})
@@ -660,6 +702,13 @@ ORDER BY identity, path`); err == nil {
 	})
 }
 
+// The meta tag in web/index.html that carries the server's default for the
+// "Group volumes" toggle (GROUP_VOLUMES).
+const (
+	groupVolumesOn  = `<meta name="shelf-group-volumes" content="on">`
+	groupVolumesOff = `<meta name="shelf-group-volumes" content="off">`
+)
+
 func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -669,6 +718,10 @@ func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "ui missing", http.StatusInternalServerError)
 		return
+	}
+	// The page ships with grouping on; GROUP_VOLUMES=false flips its default.
+	if !a.cfg.GroupVolumes {
+		data = bytes.Replace(data, []byte(groupVolumesOn), []byte(groupVolumesOff), 1)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(data)
