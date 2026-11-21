@@ -702,6 +702,13 @@ ORDER BY identity, path`); err == nil {
 	})
 }
 
+// The meta tag in web/index.html that carries the server's default for the
+// "Group volumes" toggle (GROUP_VOLUMES).
+const (
+	groupVolumesOn  = `<meta name="shelf-group-volumes" content="on">`
+	groupVolumesOff = `<meta name="shelf-group-volumes" content="off">`
+)
+
 func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -711,6 +718,10 @@ func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "ui missing", http.StatusInternalServerError)
 		return
+	}
+	// The page ships with grouping on; GROUP_VOLUMES=false flips its default.
+	if !a.cfg.GroupVolumes {
+		data = bytes.Replace(data, []byte(groupVolumesOn), []byte(groupVolumesOff), 1)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(data)

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -201,5 +202,32 @@ func TestOpenIndexDBRecomputesStaleSeries(t *testing.T) {
 	idx.QueryRow(`SELECT series_key, volume FROM archives`).Scan(&key, &vol)
 	if key != "" || vol != 0 {
 		t.Fatalf("series = %q %d, want none (a leading number is not a volume)", key, vol)
+	}
+}
+
+// GROUP_VOLUMES sets the page's default for the "Group volumes" toggle.
+func TestGroupVolumesDefaultFromEnv(t *testing.T) {
+	for _, c := range []struct {
+		env  string
+		want bool
+	}{{"", true}, {"true", true}, {"1", true}, {"false", false}, {"0", false}, {" FALSE ", false}, {"nope", true}} {
+		t.Setenv("GROUP_VOLUMES", c.env)
+		if got := LoadConfig().GroupVolumes; got != c.want {
+			t.Errorf("GROUP_VOLUMES=%q: got %v, want %v", c.env, got, c.want)
+		}
+	}
+
+	for _, on := range []bool{true, false} {
+		a := &App{cfg: Config{GroupVolumes: on}}
+		rec := httptest.NewRecorder()
+		a.handleIndex(rec, httptest.NewRequest("GET", "/", nil))
+		body := rec.Body.String()
+		want, other := groupVolumesOn, groupVolumesOff
+		if !on {
+			want, other = other, want
+		}
+		if !strings.Contains(body, want) || strings.Contains(body, other) {
+			t.Errorf("GroupVolumes=%v: page should carry %s only", on, want)
+		}
 	}
 }

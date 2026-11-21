@@ -8,6 +8,7 @@
 <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#17181c">
+<meta name="shelf-group-volumes" content="on">
 <style>
   :root{
     --bg:#17181c; --panel:#1f2026; --panel-2:#26272e; --line:#31333c;
@@ -383,14 +384,20 @@
   const prefs = loadPrefs();
   const def = (v, d) => v !== undefined ? v : d;
 
-  const state = { q:'', fav:false, semantic:false, hideDupes: def(prefs.hideDupes, true), groupVolumes: def(prefs.groupVolumes, true), offset:0, limit:60, loading:false, done:false };
+  // "Group volumes" follows the server's GROUP_VOLUMES until this browser flips
+  // the toggle; only that explicit choice is saved (groupChoice), so changing
+  // the server default still reaches browsers that never touched it.
+  const groupMeta = document.querySelector('meta[name="shelf-group-volumes"]');
+  const groupDefault = !groupMeta || groupMeta.content !== 'off';
+  let groupChoice = typeof prefs.groupChoice === 'boolean' ? prefs.groupChoice : undefined;
+  const state = { q:'', fav:false, semantic:false, hideDupes: def(prefs.hideDupes, true), groupVolumes: def(groupChoice, groupDefault), offset:0, limit:60, loading:false, done:false };
   const reader = { id:null, page:0, count:0,
     rtl: def(prefs.rtl, true), fitH: def(prefs.fitH, true), spread: def(prefs.spread, true) };
 
   function savePrefs(){
     try { localStorage.setItem(PREFS_KEY, JSON.stringify({
       rtl: reader.rtl, spread: reader.spread, fitH: reader.fitH, hideDupes: state.hideDupes,
-      groupVolumes: state.groupVolumes
+      groupChoice
     })); } catch(_) {}
   }
 
@@ -908,7 +915,7 @@
     loadList(true);
   });
   $('#grpBtn').addEventListener('click', e => {
-    state.groupVolumes = !state.groupVolumes;
+    state.groupVolumes = groupChoice = !state.groupVolumes;
     e.currentTarget.setAttribute('aria-pressed', state.groupVolumes ? 'true' : 'false');
     savePrefs();
     loadList(true);

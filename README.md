@@ -215,7 +215,8 @@ cover of the highest volume and a volume count. Tap it to list the volumes. The
 volume number is a suffix: the last number in the name that isn't inside `()`,
 `[]` or `{}` (the leading `#id` doesn't count, so `01 Some Series Name` is not a
 volume), and everything else in the name must match. Turn it off with **Group
-volumes** in the header.
+volumes** in the header. `GROUP_VOLUMES=false` makes it start off instead; a
+browser that has flipped the toggle keeps its own choice.
 
 ### Metadata & tags
 
@@ -339,6 +340,7 @@ The app itself reads these:
 | `WORKER_CONCURRENCY` | number of CPUs | Parallel indexers |
 | `THUMB_WIDTH` | `400` | Cover width in px |
 | `API_KEY` | — (empty) | Shared key for the whole app; empty = no authentication |
+| `GROUP_VOLUMES` | `true` | Default for the **Group volumes** toggle; `false` starts it off |
 | `INDEX_DB_PATH` / `USER_DB_PATH` | under `CACHE_DIR` | Override DB locations |
 
 These are Docker-only (used by Compose and the entrypoint, not the binary):

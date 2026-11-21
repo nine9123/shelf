@@ -13,6 +13,7 @@ services:
       WORKER_CONCURRENCY: "4"    # parallel indexers; raise on multi-core boxes
       THUMB_WIDTH: "400"
       API_KEY: "${API_KEY:-}"    # set in .env to require a key; empty = no auth
+      GROUP_VOLUMES: "${GROUP_VOLUMES:-true}"  # default of the "Group volumes" toggle
     volumes:
       # Your archive root -> where the app looks inside the container. READ-ONLY.
       - ${LIBRARY_PATH:?set LIBRARY_PATH in .env to your archive root}:/data/library:ro
