@@ -11,9 +11,7 @@ import (
 // a single card in the library.
 
 var (
-	leadingID = regexp.MustCompile(`^(-?\d+)\s+`)
-	// A volume number leading the name: "01 Foo", "01 - Foo", "Vol. 1 Foo".
-	leadingVol = regexp.MustCompile(`(?i)^(?:(?:vol|volume|v|no|part|pt|book)\.?\s*|#\s*)?(\d+)(?:\s*[-_.,:;~]\s*|\s+)(.*\S)`)
+	leadingID = regexp.MustCompile(`^-?\d+\s+`)
 	// A volume marker right before the number: "Vol.", "Volume", "v", "#", ...
 	volMarker = regexp.MustCompile(`(?i)(?:\b(?:vol|volume|v|no|part|pt|book)\.?|#)\s*$`)
 	spaces    = regexp.MustCompile(`\s+`)
@@ -21,39 +19,22 @@ var (
 
 // seriesOf splits an archive title into its series and volume number.
 //
-// The leading "#id " (see identityOf) is set aside, since every volume has its
-// own ID. Then, in order:
-//
-//  1. A number leading the rest of the name is the volume: "0042 01 Foo".
-//  2. Otherwise the volume is the last number that isn't inside (), [] or {}
-//     (those usually hold release notes like "[1080p]" or "(2019)") and has a
-//     name before it: "Foo Vol. 1". A volume marker right before the number is
-//     dropped so "Foo Vol. 1" and "Foo v2" are the same series; whatever
-//     follows the number must match too.
-//  3. Otherwise, when the rest has no volume number, the leading number itself
-//     is taken as the volume: "01 Foo", "02 Foo". (Such files also share their
-//     ID with other series' volume 1, 2, ...; see identityOf.)
+// The volume number is a suffix: "Some Series Name 01", "Foo Vol. 1". The
+// leading "#id " (see identityOf) is ignored, since every volume has its own ID,
+// so a number leading the name is never the volume. The volume is the last
+// number in the remaining name that isn't inside (), [] or {} — those usually
+// hold release notes like "[1080p]" or "(2019)". A volume marker right before
+// the number is dropped so "Foo Vol. 1" and "Foo v2" are the same series;
+// whatever follows the number must match too.
 //
 // key is the normalized series name used for grouping (lowercase, collapsed
 // whitespace, no double quotes so it can be written in a search query); name is
 // a display form. ok is false when the title has no volume number, in which
 // case the archive never groups with anything.
 func seriesOf(title string) (key, name string, vol int, ok bool) {
-	t := strings.TrimSpace(title)
-	s, lead := t, ""
-	if m := leadingID.FindStringSubmatch(t); m != nil {
-		s, lead = t[len(m[0]):], m[1]
-	}
-	if m := leadingVol.FindStringSubmatch(s); m != nil {
-		if n, err := strconv.Atoi(m[1]); err == nil {
-			return finishSeries(m[2], n)
-		}
-	}
+	s := leadingID.ReplaceAllString(strings.TrimSpace(title), "")
 	if pre, n, found := trailingVolume(s); found {
 		return finishSeries(pre, n)
-	}
-	if n, err := strconv.Atoi(lead); err == nil && n >= 0 {
-		return finishSeries(s, n)
 	}
 	return "", "", 0, false
 }

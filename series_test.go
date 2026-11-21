@@ -25,13 +25,13 @@ func TestSeriesOf(t *testing.T) {
 		{"Foo 2 [English]", "foo [english]", 2, true},
 		{"Foo  Vol 2 (2019)", "foo (2019)", 2, true},
 		{`Foo "Bar" 4`, "foo bar", 4, true},
-		{"01 Some Series Name", "some series name", 1, true}, // the leading number is the volume
-		{"12 Some Series Name", "some series name", 12, true},
-		{"0042 01 Some Series Name", "some series name", 1, true}, // ID, then volume
-		{"0042 02 - Some Series Name", "some series name", 2, true},
-		{"0042 Vol. 3 Some Series Name", "some series name", 3, true},
-		{"01 Foo Vol. 2", "foo", 2, true}, // an explicit trailing volume wins
-		{"-7 Foo", "", 0, false},          // a negative ID isn't a volume
+		{"Some Series Name 01", "some series name", 1, true}, // the volume is a suffix
+		{"Some Series Name 12", "some series name", 12, true},
+		{"0042 Some Series Name 02", "some series name", 2, true}, // ID, then name and volume
+		{"01 Some Series Name", "", 0, false},                     // a leading number is the ID, not the volume
+		{"0042 01 Some Series Name", "", 0, false},
+		{"01 Foo Vol. 2", "foo", 2, true},
+		{"-7 Foo", "", 0, false}, // the only number is the ID
 		{"-7", "", 0, false},
 		{"Foo [1080p]", "", 0, false}, // numbers in brackets aren't volumes
 		{"12", "", 0, false},          // nothing but a number
@@ -46,7 +46,7 @@ func TestSeriesOf(t *testing.T) {
 	if _, name, _, _ := seriesOf("0042 Foo Vol. 3"); name != "Foo" {
 		t.Errorf("name = %q, want Foo", name)
 	}
-	if _, name, _, _ := seriesOf("01 Some  Series Name"); name != "Some Series Name" {
+	if _, name, _, _ := seriesOf("0042 Some  Series Name 01"); name != "Some Series Name" {
 		t.Errorf("name = %q, want Some Series Name", name)
 	}
 }
@@ -106,7 +106,7 @@ func TestListGroupsVolumes(t *testing.T) {
 	}
 }
 
-func TestListGroupsLeadingVolumeNumbers(t *testing.T) {
+func TestListGroupsSuffixVolumeNumbers(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := openIndexDB(filepath.Join(dir, "index.db"))
 	if err != nil {
@@ -119,7 +119,7 @@ func TestListGroupsLeadingVolumeNumbers(t *testing.T) {
 	}
 	defer user.Close()
 	a := &App{cfg: Config{CoversDir: dir}, index: idx, user: user}
-	for _, rel := range []string{"Series/01 Some Series Name.cbz", "Series/02 Some Series Name.cbz", "Series/10 Some Series Name.cbz", "Other/03 Other Name.cbz"} {
+	for _, rel := range []string{"Series/Some Series Name 01.cbz", "Series/Some Series Name 02.cbz", "Series/Some Series Name 10.cbz", "Other/Other Name 03.cbz", "Other/04 Leading Name.cbz", "Other/05 Leading Name.cbz"} {
 		a.writeResult(result{rel: rel, title: titleFromRel(rel), pageCount: 1})
 	}
 	rec := httptest.NewRecorder()
@@ -128,8 +128,8 @@ func TestListGroupsLeadingVolumeNumbers(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("%s: %v", rec.Body.String(), err)
 	}
-	if len(out.Items) != 2 {
-		t.Fatalf("grouped list has %d items, want 2: %+v", len(out.Items), out.Items)
+	if len(out.Items) != 4 { // the group, "Other Name 03" and two ungrouped leading-number files
+		t.Fatalf("grouped list has %d items, want 4: %+v", len(out.Items), out.Items)
 	}
 	var grp *archiveItem
 	for i := range out.Items {
@@ -137,7 +137,7 @@ func TestListGroupsLeadingVolumeNumbers(t *testing.T) {
 			grp = &out.Items[i]
 		}
 	}
-	if grp == nil || grp.Volumes != 3 || grp.Title != "10 Some Series Name" || grp.SeriesName != "Some Series Name" {
+	if grp == nil || grp.Volumes != 3 || grp.Title != "Some Series Name 10" || grp.SeriesName != "Some Series Name" {
 		t.Fatalf("group = %+v, want 3 volumes represented by 10", grp)
 	}
 }
@@ -178,8 +178,8 @@ func TestOpenIndexDBRecomputesStaleSeries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A row written by older rules, in a cache that predates the rules version.
-	if _, err := idx.Exec(`INSERT INTO archives (path, title, status, series_key, volume) VALUES ('01 Foo.cbz', '01 Foo', 'indexed', '', 0);
+	// A row grouped by the old leading-number rule, in a cache that predates the rules version.
+	if _, err := idx.Exec(`INSERT INTO archives (path, title, status, series_key, volume) VALUES ('01 Foo.cbz', '01 Foo', 'indexed', 'foo', 1);
 		PRAGMA user_version = 0`); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestOpenIndexDBRecomputesStaleSeries(t *testing.T) {
 	var key string
 	var vol int
 	idx.QueryRow(`SELECT series_key, volume FROM archives`).Scan(&key, &vol)
-	if key != "foo" || vol != 1 {
-		t.Fatalf("series = %q %d, want foo 1", key, vol)
+	if key != "" || vol != 0 {
+		t.Fatalf("series = %q %d, want none (a leading number is not a volume)", key, vol)
 	}
 }

@@ -100,7 +100,8 @@ CREATE INDEX IF NOT EXISTS idx_tags_archive      ON tags(archive_id);`
 
 // seriesRulesVersion is stored as the index's PRAGMA user_version. Bump it when
 // seriesOf changes, so existing caches recompute series_key/volume on open.
-const seriesRulesVersion = 1
+// 2: a leading number is the ID again, never the volume (volumes are suffixes).
+const seriesRulesVersion = 2
 
 // backfillSeries fills series_key/volume for every row from its title.
 func backfillSeries(db *sql.DB) error {
