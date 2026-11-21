@@ -210,10 +210,12 @@ and re-encoding, and survive rebuilding the cache.
 ### Volume grouping
 
 Archives whose names differ only in a volume number — `Foo Vol. 1`, `Foo v2`,
-`Foo #3` — are shown as one card in the library, with the cover of the highest
-volume and a volume count. Tap it to list the volumes. The number is the last one
-in the name that isn't inside `()`, `[]` or `{}` (the leading `#id` doesn't
-count), and everything else in the name must match. Turn it off with **Group
+`Foo #3`, or a leading number like `01 Some Series Name`, `02 Some Series Name` —
+are shown as one card in the library, with the cover of the highest volume and a
+volume count. Tap it to list the volumes. A number leading the name is the volume;
+otherwise it's the last number that isn't inside `()`, `[]` or `{}`, and
+everything else in the name must match. A leading `#id` is set aside first, and
+only used as the volume when the rest of the name has no number. Turn it off with **Group
 volumes** in the header.
 
 ### Metadata & tags

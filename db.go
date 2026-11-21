@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -56,23 +57,30 @@ CREATE TABLE IF NOT EXISTS tags (
 			log.Printf("index.db: added %s column; will re-index to backfill on next scan", m.name)
 		}
 	}
-	// Series columns are derived from the title alone, so a fresh column is
-	// backfilled right here instead of re-indexing every archive.
-	added := false
+	// Series columns are derived from the title alone, so they are backfilled
+	// right here instead of re-indexing every archive: when the columns are new,
+	// and again whenever the rules in seriesOf change (seriesRulesVersion).
 	for _, ddl := range []string{
 		`ALTER TABLE archives ADD COLUMN series_key TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE archives ADD COLUMN volume INTEGER NOT NULL DEFAULT 0`,
 	} {
-		if _, err := db.Exec(ddl); err == nil {
-			added = true
-		}
+		db.Exec(ddl) // errors harmlessly when the column exists
 	}
-	if added {
+	var ver int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if ver < seriesRulesVersion {
 		if err := backfillSeries(db); err != nil {
 			db.Close()
 			return nil, err
 		}
-		log.Printf("index.db: added series columns for volume grouping")
+		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, seriesRulesVersion)); err != nil {
+			db.Close()
+			return nil, err
+		}
+		log.Printf("index.db: updated series columns for volume grouping")
 	}
 	// 3. Indexes last, once every column they reference is guaranteed to exist.
 	idx := `
@@ -89,6 +97,10 @@ CREATE INDEX IF NOT EXISTS idx_tags_archive      ON tags(archive_id);`
 	}
 	return db, nil
 }
+
+// seriesRulesVersion is stored as the index's PRAGMA user_version. Bump it when
+// seriesOf changes, so existing caches recompute series_key/volume on open.
+const seriesRulesVersion = 1
 
 // backfillSeries fills series_key/volume for every row from its title.
 func backfillSeries(db *sql.DB) error {
@@ -108,6 +120,9 @@ func backfillSeries(db *sql.DB) error {
 		}
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
