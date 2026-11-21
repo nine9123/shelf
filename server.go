@@ -104,7 +104,7 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 	series, hasSeries := "", false
 	for i := 0; i < len(tagFilters); i++ {
 		if strings.EqualFold(tagFilters[i].ns, "volumes") {
-			series, hasSeries = tagFilters[i].val, true
+			series, hasSeries = seriesKey(tagFilters[i].val), true
 			tagFilters = append(tagFilters[:i], tagFilters[i+1:]...)
 			i--
 		}
@@ -131,7 +131,7 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 		args = append(args, category)
 	}
 	if hasSeries {
-		where.WriteString(` AND series_key = ? COLLATE NOCASE`)
+		where.WriteString(` AND series_key = ?`)
 		args = append(args, series)
 	}
 	for _, tf := range tagFilters { // each tag filter ANDed via its own subquery

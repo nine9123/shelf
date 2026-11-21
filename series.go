@@ -77,9 +77,16 @@ func trailingVolume(s string) (name string, vol int, ok bool) {
 
 func finishSeries(name string, vol int) (string, string, int, bool) {
 	name = spaces.ReplaceAllString(strings.TrimSpace(name), " ")
-	key := strings.TrimSpace(strings.ToLower(strings.ReplaceAll(name, `"`, "")))
+	key := seriesKey(name)
 	if key == "" {
 		return "", "", 0, false
 	}
 	return key, name, vol, true
+}
+
+// seriesKey normalizes a series name into the key stored in series_key:
+// lowercase, double quotes dropped, whitespace collapsed. A volumes: search
+// value goes through it too, since SQLite's NOCASE only folds ASCII.
+func seriesKey(name string) string {
+	return strings.TrimSpace(spaces.ReplaceAllString(strings.ToLower(strings.ReplaceAll(name, `"`, "")), " "))
 }

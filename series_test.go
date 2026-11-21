@@ -104,6 +104,12 @@ func TestListGroupsVolumes(t *testing.T) {
 	if len(got) != 3 || got[0].Title != "1 Foo Vol. 1" || got[1].Title != "3 Foo Vol. 2" || got[2].Title != "2 Foo Vol. 10" {
 		t.Fatalf("series list = %+v", got)
 	}
+	// The value is normalized like the stored key: case (beyond ASCII) and spacing.
+	a.writeResult(result{rel: "6 Ärger  Band 1.cbz", title: titleFromRel("6 Ärger  Band 1.cbz"), pageCount: 1})
+	a.writeResult(result{rel: "7 Ärger Band 2.cbz", title: titleFromRel("7 Ärger Band 2.cbz"), pageCount: 1})
+	if got := list(url.Values{"q": {`volumes:"ÄRGER   Band"`}}); len(got) != 2 {
+		t.Fatalf("non-ASCII series list has %d items, want 2: %+v", len(got), got)
+	}
 }
 
 func TestListGroupsSuffixVolumeNumbers(t *testing.T) {
