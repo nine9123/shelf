@@ -27,7 +27,8 @@
   header{position:sticky;top:0;z-index:5;display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;
     padding:.8rem 1.1rem;background:rgba(23,24,28,.92);backdrop-filter:blur(8px);
     border-bottom:1px solid var(--line)}
-  .brand{font-weight:600;letter-spacing:.02em;font-size:1.15rem;margin-right:.3rem}
+  .brand{font-weight:600;letter-spacing:.02em;font-size:1.15rem;margin-right:.3rem;
+    color:inherit;text-decoration:none}
   .brand span{color:var(--accent)}
   .spacer{flex:1}
   .status{color:var(--muted);font-size:.85rem;min-width:11ch;text-align:right}
@@ -48,6 +49,10 @@
   .sub{color:var(--muted);font-size:.72rem;margin-top:.2rem}
   .volbadge{position:absolute;left:.4rem;bottom:.4rem;background:rgba(0,0,0,.65);color:#fff;
     font-size:.72rem;padding:.15rem .45rem;border-radius:999px;pointer-events:none}
+  /* where Resume lands, or a check once the last page was reached */
+  .prog{position:absolute;left:.4rem;bottom:.4rem;background:rgba(0,0,0,.65);color:#fff;
+    font-size:.72rem;padding:.15rem .45rem;border-radius:999px;pointer-events:none}
+  .prog.done{color:var(--accent);font-weight:600}
   .empty{color:var(--muted);text-align:center;padding:4rem 1rem}
   .sentinel{color:var(--muted);text-align:center;padding:1.4rem;min-height:1px;font-size:.85rem}
   .helpbox{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
@@ -186,7 +191,7 @@
 </head>
 <body>
   <header>
-    <div class="brand">Shelf<span>.</span></div>
+    <a id="brand" class="brand" href="#/" title="Library home — clears search and filters">Shelf<span>.</span></a>
     <input id="q" type="search" placeholder="Search — words, or artist:foo  parody:bar" autocomplete="off">
     <button id="qHelp" class="toggle" title="Search syntax" aria-pressed="false">?</button>
     <button id="favBtn" class="toggle" aria-pressed="false">Favorites</button>
@@ -477,6 +482,7 @@
     for(const it of items){
       if(it.volumes > 1){ grid.appendChild(groupCard(it)); continue; }
       const card = el('div','card');
+      card.dataset.id = it.id;
       const cover = el('div','cover');
       if(it.hasCover){
         const img = el('img'); img.loading='lazy';
@@ -496,6 +502,7 @@
         if(state.fav && !it.favorite) card.remove(); // drop it from the favorites view
       });
       cover.appendChild(fav);
+      setProgressBadge(cover, it.lastPage, it.pageCount);
       cover.addEventListener('click', () => navigate('#/comic/' + it.id));
 
       const meta = el('div','meta');
@@ -507,6 +514,27 @@
       card.addEventListener('mouseenter', () => hoverEnter(card, it));
       card.addEventListener('mouseleave', hoverLeave);
       grid.appendChild(card);
+    }
+  }
+
+  // The resume page when it isn't the first, or a check once the last page was
+  // reached. lastPage is 0-based; Resume opens at lastPage + 1.
+  const isFinished = (last, count) => count > 0 && last >= count - 1;
+  function setProgressBadge(cover, last, count){
+    let b = cover.querySelector('.prog');
+    if(!(last > 0)){ if(b) b.remove(); cover.removeAttribute('title'); return; }
+    if(!b){ b = el('div','prog'); cover.appendChild(b); }
+    const done = isFinished(last, count);
+    b.classList.toggle('done', done);
+    b.textContent = done ? '\u2713' : ('p.' + (last + 1));
+    cover.title = done ? 'Finished' : ('Resumes at page ' + (last + 1));
+  }
+  // Keep library covers in step with progress saved from the reader, since the
+  // grid isn't reloaded when the reader closes.
+  function updateCardProgress(id, last, count){
+    for(const card of $('#grid').querySelectorAll('.card[data-id="' + id + '"]')){
+      const cover = card.querySelector('.cover');
+      if(cover) setProgressBadge(cover, last, count);
     }
   }
 
@@ -887,10 +915,13 @@
   let saveT;
   function saveProgress(){
     clearTimeout(saveT);
-    const id = reader.id, page = reader.page;
-    saveT = setTimeout(() => {
-      api('/api/archives/' + id + '/progress',
+    const id = reader.id, count = reader.count;
+    // A spread that shows the last page counts as having reached it.
+    const page = (reader.spread && reader.page + 2 === count) ? count - 1 : reader.page;
+    saveT = setTimeout(async () => {
+      const r = await api('/api/archives/' + id + '/progress',
         { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ page }) });
+      if(r.ok) updateCardProgress(id, page, count);
     }, 600);
   }
 
@@ -898,6 +929,23 @@
   function readerBack(){ navigate(reader.id != null ? ('#/comic/' + reader.id) : '#/'); }
 
   /* controls */
+  // The logo goes home: library view, no search, no favorites/semantic filter.
+  // Hide dupes / Group volumes are saved display preferences and stay as set.
+  $('#brand').addEventListener('click', e => {
+    e.preventDefault();
+    clearTimeout(window._qt);
+    $('#q').value = ''; state.q = '';
+    hideAC();
+    state.fav = false; $('#favBtn').setAttribute('aria-pressed', 'false');
+    if(state.semantic){
+      state.semantic = false; $('#semBtn').setAttribute('aria-pressed', 'false');
+      $('#q').placeholder = 'Search \u2014 words, or artist:foo  parody:bar';
+    }
+    $('#helpBox').hidden = true; $('#qHelp').setAttribute('aria-pressed', 'false');
+    navigate('#/');
+    window.scrollTo(0, 0);
+    loadList(true);
+  });
   $('#q').addEventListener('input', e => {
     state.q = e.target.value.trim();
     clearTimeout(window._qt);

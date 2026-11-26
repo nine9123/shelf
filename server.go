@@ -33,6 +33,7 @@ type archiveItem struct {
 	CoverVer  int64  `json:"coverVer"` // changes when the cover is (re)generated; for cache-busting
 	HasCover  bool   `json:"hasCover"`
 	Favorite  bool   `json:"favorite"`
+	LastPage  int    `json:"lastPage"` // saved reading position (0-based); 0 when unread
 	// Set only on a grouped card standing in for several volumes of a series;
 	// ID and cover are those of the highest volume.
 	Volumes    int    `json:"volumes,omitempty"`
@@ -112,6 +113,7 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 	// Collapse a series into one card, unless we're looking inside one.
 	group := r.URL.Query().Get("group") == "1" && !hasSeries
 	favSet := a.favoriteIDSet()
+	progress := a.progressByIdentity()
 
 	var where strings.Builder
 	var args []any
@@ -185,6 +187,7 @@ func (a *App) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		it.HasCover = hc == 1
 		it.Favorite = favSet[identity]
+		it.LastPage = progress[identity]
 		if n > 1 {
 			_, it.SeriesName, _, _ = seriesOf(it.Title)
 			it.SeriesKey = seriesKey
@@ -274,6 +277,7 @@ func (a *App) handleSemantic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	favSet := a.favoriteIDSet()
+	progress := a.progressByIdentity()
 	items := []archiveItem{}
 	for _, h := range a.sem.searchVec(qv, limit) {
 		var it archiveItem
@@ -283,6 +287,7 @@ func (a *App) handleSemantic(w http.ResponseWriter, r *http.Request) {
 			h.id).Scan(&it.ID, &it.Path, &it.Title, &it.PageCount, &hc, &it.Category, &it.CoverVer) == nil {
 			it.HasCover = hc == 1
 			it.Favorite = favSet[h.id]
+			it.LastPage = progress[h.id]
 			items = append(items, it)
 		}
 	}
@@ -574,6 +579,7 @@ func (a *App) handleFavorites(w http.ResponseWriter, r *http.Request) {
 		}
 		it.HasCover = hc == 1
 		it.Favorite = true
+		it.LastPage = a.readProgress(ident)
 		items = append(items, it)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -823,6 +829,25 @@ func (a *App) readProgress(identity string) int {
 		return 0
 	}
 	return p
+}
+
+// progressByIdentity returns every saved reading position, keyed by identity,
+// so a list can annotate its covers without a query per row.
+func (a *App) progressByIdentity() map[string]int {
+	m := map[string]int{}
+	rows, err := a.user.Query(`SELECT identity, last_page FROM read_progress`)
+	if err != nil {
+		return m
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var p int
+		if rows.Scan(&id, &p) == nil {
+			m[id] = p
+		}
+	}
+	return m
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

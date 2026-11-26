@@ -113,6 +113,42 @@ func TestListGroupsVolumes(t *testing.T) {
 	}
 }
 
+// List items carry the saved reading position, so a cover can show where
+// Resume lands and whether the volume was finished.
+func TestListCarriesLastPage(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := openIndexDB(filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	user, err := openUserDB(filepath.Join(dir, "user.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer user.Close()
+	a := &App{cfg: Config{CoversDir: dir}, index: idx, user: user}
+	a.writeResult(result{rel: "1 Read.cbz", title: titleFromRel("1 Read.cbz"), pageCount: 20})
+	a.writeResult(result{rel: "2 Unread.cbz", title: titleFromRel("2 Unread.cbz"), pageCount: 20})
+	if _, err := user.Exec(`INSERT INTO read_progress(identity, last_page, updated_at) VALUES('#1', 7, 0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	a.handleList(rec, httptest.NewRequest("GET", "/api/archives", nil))
+	var out struct{ Items []archiveItem }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("%s: %v", rec.Body.String(), err)
+	}
+	got := map[string]int{}
+	for _, it := range out.Items {
+		got[it.Title] = it.LastPage
+	}
+	if len(got) != 2 || got["1 Read"] != 7 || got["2 Unread"] != 0 {
+		t.Fatalf("lastPage by title = %v, want 1 Read:7, 2 Unread:0", got)
+	}
+}
+
 func TestListGroupsSuffixVolumeNumbers(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := openIndexDB(filepath.Join(dir, "index.db"))
