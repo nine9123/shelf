@@ -522,7 +522,7 @@
   const isFinished = (last, count) => count > 0 && last >= count - 1;
   function setProgressBadge(cover, last, count){
     let b = cover.querySelector('.prog');
-    if(!(last > 0)){ if(b) b.remove(); return; }
+    if(!(last > 0)){ if(b) b.remove(); cover.removeAttribute('title'); return; }
     if(!b){ b = el('div','prog'); cover.appendChild(b); }
     const done = isFinished(last, count);
     b.classList.toggle('done', done);
